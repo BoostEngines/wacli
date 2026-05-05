@@ -38,6 +38,7 @@ func newSendTextCmd(flags *rootFlags) *cobra.Command {
 	var message string
 	var replyTo string
 	var replyToSender string
+	var mentions []string
 	var noPreview bool
 	postSendWait := postSendRetryReceiptWait
 
@@ -78,7 +79,7 @@ func newSendTextCmd(flags *rootFlags) *cobra.Command {
 
 			preview := fetchLinkPreview(ctx, message, noPreview)
 			msgID, err := runSendOperation(ctx, reconnectForSend(a), func(ctx context.Context) (types.MessageID, error) {
-				return sendTextMessage(ctx, a, toJID, message, replyTo, replyToSender, preview)
+				return sendTextMessage(ctx, a, toJID, message, replyTo, replyToSender, mentions, preview)
 			})
 			if err != nil {
 				return err
@@ -119,6 +120,7 @@ func newSendTextCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&message, "message", "", "message text")
 	cmd.Flags().StringVar(&replyTo, "reply-to", "", "message ID to quote/reply to")
 	cmd.Flags().StringVar(&replyToSender, "reply-to-sender", "", "sender JID of the quoted message (required for unsynced group replies)")
+	cmd.Flags().StringArrayVar(&mentions, "mention", nil, "user JID or phone number to mention (repeatable)")
 	cmd.Flags().BoolVar(&noPreview, "no-preview", false, "disable automatic link previews for the first URL in text")
 	cmd.Flags().DurationVar(&postSendWait, "post-send-wait", postSendRetryReceiptWait, "keep the connection alive after send so retry receipts can be handled (0 disables)")
 	return cmd
@@ -129,8 +131,8 @@ type sendTextApp interface {
 	DB() *store.DB
 }
 
-func sendTextMessage(ctx context.Context, a sendTextApp, to types.JID, text, replyTo, replyToSender string, preview *linkpreview.Preview) (types.MessageID, error) {
-	msg, plainText, err := buildTextMessage(a.DB(), to, text, replyTo, replyToSender, preview)
+func sendTextMessage(ctx context.Context, a sendTextApp, to types.JID, text, replyTo, replyToSender string, mentions []string, preview *linkpreview.Preview) (types.MessageID, error) {
+	msg, plainText, err := buildTextMessage(a.DB(), to, text, replyTo, replyToSender, mentions, preview)
 	if err != nil {
 		return "", err
 	}
@@ -157,8 +159,8 @@ func fetchLinkPreview(ctx context.Context, text string, disabled bool) *linkprev
 	return preview
 }
 
-func buildTextMessage(db *store.DB, to types.JID, text, replyTo, replyToSender string, preview *linkpreview.Preview) (*waProto.Message, bool, error) {
-	info, err := buildReplyContextInfo(db, to, replyTo, replyToSender)
+func buildTextMessage(db *store.DB, to types.JID, text, replyTo, replyToSender string, mentions []string, preview *linkpreview.Preview) (*waProto.Message, bool, error) {
+	info, err := buildTextContextInfo(db, to, replyTo, replyToSender, mentions)
 	if err != nil {
 		return nil, false, err
 	}
@@ -193,6 +195,51 @@ func attachLinkPreview(msg *waProto.ExtendedTextMessage, preview *linkpreview.Pr
 		return
 	}
 	msg.PreviewType = waProto.ExtendedTextMessage_NONE.Enum()
+}
+
+func buildTextContextInfo(db *store.DB, chat types.JID, replyTo, replyToSender string, mentions []string) (*waProto.ContextInfo, error) {
+	info, err := buildReplyContextInfo(db, chat, replyTo, replyToSender)
+	if err != nil {
+		return nil, err
+	}
+
+	mentioned, err := normalizeMentionJIDs(mentions)
+	if err != nil {
+		return nil, err
+	}
+	if len(mentioned) == 0 {
+		return info, nil
+	}
+	if chat.Server != types.GroupServer {
+		return nil, fmt.Errorf("--mention is only supported for group text messages")
+	}
+	if info == nil {
+		info = &waProto.ContextInfo{}
+	}
+	info.MentionedJID = mentioned
+	return info, nil
+}
+
+func normalizeMentionJIDs(raw []string) ([]string, error) {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(raw))
+	for _, input := range raw {
+		jid, err := wa.ParseUserOrJID(input)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --mention %q: %w", input, err)
+		}
+		jid = jid.ToNonAD()
+		if jid.Server != types.DefaultUserServer && jid.Server != types.HiddenUserServer {
+			return nil, fmt.Errorf("invalid --mention %q: must be a user JID or phone number", input)
+		}
+		normalized := jid.String()
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out, nil
 }
 
 func buildReplyContextInfo(db *store.DB, chat types.JID, replyTo, replyToSender string) (*waProto.ContextInfo, error) {

@@ -17,6 +17,7 @@
 - Auth: auto-detect a readable linked-device label and default linked-device platform to desktop. (#100 — thanks @pmatheus)
 - Profile: add `profile set-picture` to update the authenticated account profile picture from JPEG or PNG input. (#198 — thanks @gado-ships-it)
 - Send: add `send react` to add or clear reactions, with group sender validation. (#151 — thanks @draix)
+- Send: add `send text --mention` for WhatsApp user mentions in group messages. (#16)
 - Send: add `send file --reply-to` for quoted media/document replies. (#68 — thanks @vlassance)
 - Send: add automatic link previews for text messages with `--no-preview` opt-out. (#94, #95 — thanks @elgatoflaco)
 - Send: add `send voice` and `send file --ptt` for OGG/Opus WhatsApp voice notes. (#40, #41 — thanks @ricardopolo and @emre6943)
