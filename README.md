@@ -25,7 +25,7 @@ Full docs site: <https://wacli.sh>.
 - [Messages](docs/messages.md): `messages list/search/starred/show/context/export/edit/delete`.
 - [Send](docs/send.md): `send text/file/sticker/voice/react`, recipient resolution, replies.
 - [Media](docs/media.md): `media download`.
-- [Contacts](docs/contacts.md): `contacts search/show/refresh`, aliases, tags.
+- [Contacts](docs/contacts.md): `contacts search/show/refresh/import-system`, aliases, tags.
 - [Chats](docs/chats.md): `chats list/show`, archive, pin, mute, mark read.
 - [Groups](docs/groups.md): group list, refresh, info, rename, leave, participants, invites, join.
 - [Store](docs/store.md): local store stats and cleanup commands.
@@ -47,7 +47,7 @@ Full docs site: <https://wacli.sh>.
 - **Message tools**: list/search/show/context with chat, sender, direction, time, order, and media-type filters.
 - **Sending**: send text, mentions, quoted replies, stickers, and image/video/audio/document files with captions, MIME override, and custom display filenames. Sends keep a short retry-receipt grace window, and rapid repeated sends warn on stderr.
 - **Media**: download synced message media on demand, or download in the background during auth/sync; send-file uploads and downloads are capped at 100 MiB.
-- **Contacts/chats/groups/store/channels**: search/show contacts, local aliases/tags, list/show/filter chats, archive/pin/mute/mark-read chats, refresh/list/info/rename/prune groups, inspect/prune the local store, manage participants, invite links, join, leave, and manage WhatsApp Channels.
+- **Contacts/chats/groups/store/channels**: search/show contacts, import macOS Contacts names, local aliases/tags, list/show/filter chats, archive/pin/mute/mark-read chats, refresh/list/info/rename/prune groups, inspect/prune the local store, manage participants, invite links, join, leave, and manage WhatsApp Channels.
 - **Presence**: send typing/paused indicators.
 - **Profile**: set the authenticated account profile picture from JPEG or PNG input.
 - **Diagnostics + safety**: `doctor`, read-only mode, store locks with lock-owner reporting, lock waiting, owner-only database permissions, panic recovery, reconnect bounds, and bounded media queue backpressure.
@@ -209,6 +209,7 @@ Full command docs live under [docs/overview.md](docs/overview.md). Quick referen
 - `wacli contacts search <query>`
 - `wacli contacts show --jid JID`
 - `wacli contacts refresh`
+- `wacli contacts import-system [--input FILE] [--dry-run] [--clear]`
 - `wacli contacts alias set|rm --jid JID [--alias NAME]`
 - `wacli contacts tags add|rm --jid JID --tag TAG`
 - `wacli chats list [--query TEXT] [--limit N] [--archived|--no-archived] [--pinned|--no-pinned] [--muted|--no-muted] [--unread|--no-unread]`

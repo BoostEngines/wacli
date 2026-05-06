@@ -18,6 +18,7 @@ func newContactsCmd(flags *rootFlags) *cobra.Command {
 	cmd.AddCommand(newContactsSearchCmd(flags))
 	cmd.AddCommand(newContactsShowCmd(flags))
 	cmd.AddCommand(newContactsRefreshCmd(flags))
+	cmd.AddCommand(newContactsImportSystemCmd(flags))
 	cmd.AddCommand(newContactsAliasCmd(flags))
 	cmd.AddCommand(newContactsTagsCmd(flags))
 	return cmd
@@ -103,6 +104,9 @@ func newContactsShowCmd(flags *rootFlags) *cobra.Command {
 			}
 			if c.Alias != "" {
 				fmt.Fprintf(os.Stdout, "Alias: %s\n", c.Alias)
+			}
+			if c.SystemName != "" {
+				fmt.Fprintf(os.Stdout, "System Name: %s\n", c.SystemName)
 			}
 			if len(c.Tags) > 0 {
 				fmt.Fprintf(os.Stdout, "Tags: %s\n", strings.Join(c.Tags, ", "))

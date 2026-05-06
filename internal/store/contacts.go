@@ -16,15 +16,23 @@ func (d *DB) SearchContacts(query string, limit int) ([]Contact, error) {
 		SELECT c.jid,
 		       COALESCE(c.phone,''),
 		       COALESCE(NULLIF(a.alias,''), ''),
-		       COALESCE(NULLIF(c.full_name,''), NULLIF(c.push_name,''), NULLIF(c.business_name,''), NULLIF(c.first_name,''), ''),
+		       COALESCE(NULLIF(c.system_name,''), ''),
+		       COALESCE(NULLIF(a.alias,''), NULLIF(c.system_name,''), NULLIF(c.full_name,''), NULLIF(c.push_name,''), NULLIF(c.business_name,''), NULLIF(c.first_name,''), ''),
 		       c.updated_at
 		FROM contacts c
 		LEFT JOIN contact_aliases a ON a.jid = c.jid
-		WHERE LOWER(COALESCE(a.alias,'')) LIKE LOWER(?) ESCAPE '\' OR LOWER(COALESCE(c.full_name,'')) LIKE LOWER(?) ESCAPE '\' OR LOWER(COALESCE(c.push_name,'')) LIKE LOWER(?) ESCAPE '\' OR LOWER(COALESCE(c.first_name,'')) LIKE LOWER(?) ESCAPE '\' OR LOWER(COALESCE(c.business_name,'')) LIKE LOWER(?) ESCAPE '\' OR LOWER(COALESCE(c.phone,'')) LIKE LOWER(?) ESCAPE '\' OR LOWER(c.jid) LIKE LOWER(?) ESCAPE '\'
-		ORDER BY COALESCE(NULLIF(a.alias,''), NULLIF(c.full_name,''), NULLIF(c.push_name,''), NULLIF(c.business_name,''), NULLIF(c.first_name,''), c.jid)
+		WHERE LOWER(COALESCE(a.alias,'')) LIKE LOWER(?) ESCAPE '\'
+		   OR LOWER(COALESCE(c.system_name,'')) LIKE LOWER(?) ESCAPE '\'
+		   OR LOWER(COALESCE(c.full_name,'')) LIKE LOWER(?) ESCAPE '\'
+		   OR LOWER(COALESCE(c.push_name,'')) LIKE LOWER(?) ESCAPE '\'
+		   OR LOWER(COALESCE(c.first_name,'')) LIKE LOWER(?) ESCAPE '\'
+		   OR LOWER(COALESCE(c.business_name,'')) LIKE LOWER(?) ESCAPE '\'
+		   OR LOWER(COALESCE(c.phone,'')) LIKE LOWER(?) ESCAPE '\'
+		   OR LOWER(c.jid) LIKE LOWER(?) ESCAPE '\'
+		ORDER BY COALESCE(NULLIF(a.alias,''), NULLIF(c.system_name,''), NULLIF(c.full_name,''), NULLIF(c.push_name,''), NULLIF(c.business_name,''), NULLIF(c.first_name,''), c.jid)
 		LIMIT ?`
 	needle := likeContains(query)
-	rows, err := d.sql.Query(q, needle, needle, needle, needle, needle, needle, needle, limit)
+	rows, err := d.sql.Query(q, needle, needle, needle, needle, needle, needle, needle, needle, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +42,40 @@ func (d *DB) SearchContacts(query string, limit int) ([]Contact, error) {
 	for rows.Next() {
 		var c Contact
 		var updated int64
-		if err := rows.Scan(&c.JID, &c.Phone, &c.Alias, &c.Name, &updated); err != nil {
+		if err := rows.Scan(&c.JID, &c.Phone, &c.Alias, &c.SystemName, &c.Name, &updated); err != nil {
+			return nil, err
+		}
+		c.UpdatedAt = fromUnix(updated)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func (d *DB) ListContacts(limit int) ([]Contact, error) {
+	if limit <= 0 {
+		limit = 100000
+	}
+	rows, err := d.sql.Query(`
+		SELECT c.jid,
+		       COALESCE(c.phone,''),
+		       COALESCE(NULLIF(a.alias,''), ''),
+		       COALESCE(NULLIF(c.system_name,''), ''),
+		       COALESCE(NULLIF(a.alias,''), NULLIF(c.system_name,''), NULLIF(c.full_name,''), NULLIF(c.push_name,''), NULLIF(c.business_name,''), NULLIF(c.first_name,''), ''),
+		       c.updated_at
+		FROM contacts c
+		LEFT JOIN contact_aliases a ON a.jid = c.jid
+		ORDER BY COALESCE(NULLIF(a.alias,''), NULLIF(c.system_name,''), NULLIF(c.full_name,''), NULLIF(c.push_name,''), NULLIF(c.business_name,''), NULLIF(c.first_name,''), c.jid)
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Contact
+	for rows.Next() {
+		var c Contact
+		var updated int64
+		if err := rows.Scan(&c.JID, &c.Phone, &c.Alias, &c.SystemName, &c.Name, &updated); err != nil {
 			return nil, err
 		}
 		c.UpdatedAt = fromUnix(updated)
@@ -48,7 +89,8 @@ func (d *DB) GetContact(jid string) (Contact, error) {
 		SELECT c.jid,
 		       COALESCE(c.phone,''),
 		       COALESCE(NULLIF(a.alias,''), ''),
-		       COALESCE(NULLIF(c.full_name,''), NULLIF(c.push_name,''), NULLIF(c.business_name,''), NULLIF(c.first_name,''), ''),
+		       COALESCE(NULLIF(c.system_name,''), ''),
+		       COALESCE(NULLIF(a.alias,''), NULLIF(c.system_name,''), NULLIF(c.full_name,''), NULLIF(c.push_name,''), NULLIF(c.business_name,''), NULLIF(c.first_name,''), ''),
 		       c.updated_at
 		FROM contacts c
 		LEFT JOIN contact_aliases a ON a.jid = c.jid
@@ -56,13 +98,51 @@ func (d *DB) GetContact(jid string) (Contact, error) {
 	`, jid)
 	var c Contact
 	var updated int64
-	if err := row.Scan(&c.JID, &c.Phone, &c.Alias, &c.Name, &updated); err != nil {
+	if err := row.Scan(&c.JID, &c.Phone, &c.Alias, &c.SystemName, &c.Name, &updated); err != nil {
 		return Contact{}, err
 	}
 	c.UpdatedAt = fromUnix(updated)
 	tags, _ := d.ListTags(jid)
 	c.Tags = tags
 	return c, nil
+}
+
+func (d *DB) SetSystemName(jid, systemName string) error {
+	jid = strings.TrimSpace(jid)
+	systemName = strings.TrimSpace(systemName)
+	if jid == "" {
+		return fmt.Errorf("jid is required")
+	}
+	if systemName == "" {
+		return fmt.Errorf("system name is required")
+	}
+	now := nowUTC().Unix()
+	res, err := d.sql.Exec(`UPDATE contacts SET system_name = ?, updated_at = ? WHERE jid = ?`, systemName, now, jid)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("contact not found: %s", jid)
+	}
+	return nil
+}
+
+func (d *DB) ClearAllSystemNames() (int64, error) {
+	now := nowUTC().Unix()
+	res, err := d.sql.Exec(`UPDATE contacts SET system_name = NULL, updated_at = ? WHERE system_name IS NOT NULL AND system_name != ''`, now)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (d *DB) CountSystemNames() (int64, error) {
+	row := d.sql.QueryRow(`SELECT COUNT(1) FROM contacts WHERE system_name IS NOT NULL AND system_name != ''`)
+	var n int64
+	if err := row.Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 func (d *DB) ListTags(jid string) ([]string, error) {

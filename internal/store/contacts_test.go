@@ -67,3 +67,57 @@ func TestContactsAliasTagsAndSearch(t *testing.T) {
 		t.Fatalf("expected remaining tag friends, got %v", c.Tags)
 	}
 }
+
+func TestContactSystemNamePrecedenceAndSearch(t *testing.T) {
+	db := openTestDB(t)
+
+	jid := "111@s.whatsapp.net"
+	if err := db.UpsertContact(jid, "111", "Push", "Full Name", "First", "Biz"); err != nil {
+		t.Fatalf("UpsertContact: %v", err)
+	}
+	if err := db.SetSystemName(jid, "System Alice"); err != nil {
+		t.Fatalf("SetSystemName: %v", err)
+	}
+
+	c, err := db.GetContact(jid)
+	if err != nil {
+		t.Fatalf("GetContact: %v", err)
+	}
+	if c.Name != "System Alice" || c.SystemName != "System Alice" {
+		t.Fatalf("contact = %#v", c)
+	}
+
+	found, err := db.SearchContacts("System", 10)
+	if err != nil {
+		t.Fatalf("SearchContacts: %v", err)
+	}
+	if len(found) != 1 || found[0].JID != jid {
+		t.Fatalf("expected system-name match, got %#v", found)
+	}
+
+	if err := db.SetAlias(jid, "Alias Alice"); err != nil {
+		t.Fatalf("SetAlias: %v", err)
+	}
+	c, err = db.GetContact(jid)
+	if err != nil {
+		t.Fatalf("GetContact after alias: %v", err)
+	}
+	if c.Name != "Alias Alice" {
+		t.Fatalf("alias should win over system name, got %#v", c)
+	}
+
+	count, err := db.CountSystemNames()
+	if err != nil {
+		t.Fatalf("CountSystemNames: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("system name count = %d, want 1", count)
+	}
+	cleared, err := db.ClearAllSystemNames()
+	if err != nil {
+		t.Fatalf("ClearAllSystemNames: %v", err)
+	}
+	if cleared != 1 {
+		t.Fatalf("cleared = %d, want 1", cleared)
+	}
+}

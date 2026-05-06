@@ -1,0 +1,48 @@
+package syscontacts
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestNormalizePhone(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"+1 (415) 734-7847", "14157347847"},
+		{"0043 664 104 2436", "436641042436"},
+		{"14157347847", "14157347847"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := NormalizePhone(tt.in); got != tt.want {
+			t.Fatalf("NormalizePhone(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestDecodeSupportsJSONArrayAndNDJSON(t *testing.T) {
+	for _, input := range []string{
+		`[{"full_name":"Alice","phones":["+1 (415) 734-7847"]}]`,
+		"{\"full_name\":\"Alice\",\"phones\":[\"+1 (415) 734-7847\"]}\n",
+	} {
+		contacts, err := Decode(strings.NewReader(input))
+		if err != nil {
+			t.Fatalf("Decode(%q): %v", input, err)
+		}
+		if len(contacts) != 1 || contacts[0].Name() != "Alice" {
+			t.Fatalf("contacts = %#v", contacts)
+		}
+	}
+}
+
+func TestPhoneToNameKeepsFirstNameForDuplicateNumber(t *testing.T) {
+	got := PhoneToName([]Contact{
+		{FullName: "Alice", Phones: []string{"+1 (415) 734-7847"}},
+		{FullName: "Other", Phones: []string{"14157347847"}},
+	})
+	if got["14157347847"] != "Alice" {
+		t.Fatalf("phone map = %#v", got)
+	}
+}

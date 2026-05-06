@@ -26,7 +26,7 @@ Read when: you need the user-facing command map, global flags, store model, or l
 - [messages](messages.md) - list, search, show, and contextualize stored messages.
 - [send](send.md) - send text, files, stickers, replies, and reactions.
 - [media](media.md) - download media attached to stored messages.
-- [contacts](contacts.md) - search contacts and manage local aliases/tags.
+- [contacts](contacts.md) - search contacts, import macOS Contacts names, and manage local aliases/tags.
 - [chats](chats.md) - list, show, filter, and manage known chat state.
 - [groups](groups.md) - refresh, inspect, rename, leave, join, invite, and manage participants.
 - [store](store.md) - inspect local store stats and prune stale local rows.

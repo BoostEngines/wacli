@@ -21,6 +21,7 @@ const coreSchemaSQL = `
 		full_name TEXT,
 		first_name TEXT,
 		business_name TEXT,
+		system_name TEXT,
 		updated_at INTEGER NOT NULL
 	);
 

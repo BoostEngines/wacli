@@ -63,6 +63,14 @@ func TestOpenCreatesExpectedSchema(t *testing.T) {
 	if !indexExists(t, db.sql, "idx_groups_linked_parent_jid") {
 		t.Fatalf("expected linked-parent group index to exist")
 	}
+
+	contactCols, err := tableColumns(db.sql, "contacts")
+	if err != nil {
+		t.Fatalf("contacts tableColumns: %v", err)
+	}
+	if !contactCols["system_name"] {
+		t.Fatalf("expected contacts system_name column to exist")
+	}
 }
 
 func TestOpenMigratesGroupHierarchyColumns(t *testing.T) {
@@ -122,6 +130,62 @@ func TestOpenMigratesGroupHierarchyColumns(t *testing.T) {
 	}
 	if !indexExists(t, db.sql, "idx_groups_linked_parent_jid") {
 		t.Fatalf("expected migrated linked-parent group index to exist")
+	}
+}
+
+func TestOpenMigratesContactsSystemNameColumn(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wacli.db")
+
+	raw, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if _, err := raw.Exec(`
+		CREATE TABLE schema_migrations (
+			version INTEGER PRIMARY KEY,
+			name TEXT NOT NULL,
+			applied_at INTEGER NOT NULL
+		);
+		CREATE TABLE contacts (
+			jid TEXT PRIMARY KEY,
+			phone TEXT,
+			push_name TEXT,
+			full_name TEXT,
+			first_name TEXT,
+			business_name TEXT,
+			updated_at INTEGER NOT NULL
+		);
+		INSERT INTO contacts(jid, phone, updated_at) VALUES('111@s.whatsapp.net', '111', 1);
+	`); err != nil {
+		_ = raw.Close()
+		t.Fatalf("create old contacts schema: %v", err)
+	}
+	for _, m := range schemaMigrations {
+		if m.version >= 12 {
+			continue
+		}
+		if _, err := raw.Exec(`INSERT INTO schema_migrations(version, name, applied_at) VALUES(?, ?, 1)`, m.version, m.name); err != nil {
+			_ = raw.Close()
+			t.Fatalf("mark migration %d: %v", m.version, err)
+		}
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("raw close: %v", err)
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open migrated DB: %v", err)
+	}
+	defer db.Close()
+
+	contactCols, err := tableColumns(db.sql, "contacts")
+	if err != nil {
+		t.Fatalf("contacts tableColumns: %v", err)
+	}
+	if !contactCols["system_name"] {
+		t.Fatalf("expected migrated contacts system_name column")
 	}
 }
 

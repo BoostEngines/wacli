@@ -18,6 +18,7 @@
 - Messages: add `messages search --has-media`, `--type text`, case-insensitive media types, and validation for contradictory filters. (#128 — thanks @ImLukeF and @Mansehej)
 - Messages: add JSON export with `messages export --after` and `--before` filters.
 - Messages: extract searchable/display text from WhatsApp Business templates, buttons, interactive messages, and list replies. (#79 — thanks @terry-li-hm)
+- Contacts: add `contacts import-system` to import macOS Contacts display names as local metadata with alias-first precedence. (#33 — thanks @enki and @octaviofroid)
 - Auth: add `auth --qr-format text` to print the raw WhatsApp QR payload for external renderers. (#22 — thanks @teren-papercutlabs)
 - Auth: add `auth --phone` for WhatsApp's phone-number pairing flow on headless systems. (#148, #184 — thanks @giovanninibarbosa and @KillerSnails)
 - Auth: auto-detect a readable linked-device label and default linked-device platform to desktop. (#100 — thanks @pmatheus)

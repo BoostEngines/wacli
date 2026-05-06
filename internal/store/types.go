@@ -95,12 +95,13 @@ type MessageInfo struct {
 }
 
 type Contact struct {
-	JID       string
-	Phone     string
-	Name      string
-	Alias     string
-	Tags      []string
-	UpdatedAt time.Time
+	JID        string    `json:"jid"`
+	Phone      string    `json:"phone"`
+	Name       string    `json:"name"`
+	Alias      string    `json:"alias"`
+	SystemName string    `json:"system_name"`
+	Tags       []string  `json:"tags,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 func unix(t time.Time) int64 {
