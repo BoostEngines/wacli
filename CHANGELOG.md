@@ -4,6 +4,10 @@
 
 ## 0.9.1 - 2026-05-15
 
+### Added
+
+- Calls: persist WhatsApp call signaling and call-log metadata, and add `wacli calls list`.
+
 ### Fixed
 
 - Accounts: reject invalid account configs before saving and ignore relative `XDG_STATE_HOME` for default state paths.
