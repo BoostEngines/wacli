@@ -30,6 +30,8 @@ var syncWebhookPrivateHTTPClient = &http.Client{
 
 var syncWebhookSafeHTTPClient = newSyncWebhookSafeHTTPClient()
 
+var syncWebhookRequestTimeout = 5 * time.Second
+
 func newSyncWebhookSafeHTTPClient() *http.Client {
 	client := linkpreview.NewSafeHTTPClient()
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
@@ -110,6 +112,8 @@ func (a *App) postSyncWebhook(ctx context.Context, opts SyncOptions, pm wa.Parse
 	if webhookURL == "" {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, syncWebhookRequestTimeout)
+	defer cancel()
 	payload, err := json.Marshal(pm)
 	if err != nil {
 		return fmt.Errorf("marshal webhook payload: %w", err)

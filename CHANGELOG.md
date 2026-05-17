@@ -22,6 +22,7 @@
 - Messages: make `--delete-media --for-me` remove the stored local media file when present.
 - Store: count all chats and groups in `store stats` instead of the first 50 entries.
 - Sync: warn when bootstrap contact/group/channel refresh fails instead of silently ignoring it.
+- Sync: bound each webhook delivery request so shutdown is not stuck behind a slow endpoint.
 - History: unwrap edited WhatsApp messages during history sync and backfill so stored/searchable text shows the edited body instead of `(message)`. (#246 - thanks @hiasinho)
 - Sync: canonicalize `@lid` chat JIDs before enqueuing media downloads so `sync --follow --download-media` finds the correct DB row for live one-to-one messages. (#244 - thanks @Daniel1of1)
 

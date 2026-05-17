@@ -24,7 +24,7 @@ wacli sync [--once] [--follow] [--idle-exit 30s] [--max-reconnect 5m] [--max-mes
 - `--refresh-channels` fetches subscribed WhatsApp Channels live and updates local chat rows.
 - `--webhook URL` posts successfully stored live message events as JSON on a bounded background worker.
 - `--webhook-secret SECRET` signs webhook payloads with `X-Wacli-Signature: sha256=<hmac>`.
-- Webhook delivery is best-effort: failures and full-queue drops are logged as warnings and do not stop sync. Retries/backoff are intentionally out of scope for this flag.
+- Webhook delivery is best-effort: failures, request timeouts, and full-queue drops are logged as warnings and do not stop sync. Retries/backoff are intentionally out of scope for this flag.
 - If neither storage cap is configured, sync prints one warning because WhatsApp history can grow the local database substantially.
 - `WACLI_SYNC_MAX_MESSAGES` and `WACLI_SYNC_MAX_DB_SIZE` apply the same caps to `auth` bootstrap sync and `sync`.
 - While `sync --follow` is running, `send text`, `send file`, `send sticker`, `send voice`, and `send react` commands for the same store are delegated to the running sync process so they do not fail on the store lock.

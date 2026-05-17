@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,12 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestHandleLiveSyncMessagePostsSignedWebhook(t *testing.T) {
 	a := newTestApp(t)
@@ -168,5 +175,46 @@ func TestPostSyncWebhookRejectsLocalhostByDefault(t *testing.T) {
 	case <-requested:
 		t.Fatal("webhook request reached localhost")
 	default:
+	}
+}
+
+func TestPostSyncWebhookUsesRequestTimeout(t *testing.T) {
+	a := newTestApp(t)
+	oldClient := syncWebhookPrivateHTTPClient
+	oldTimeout := syncWebhookRequestTimeout
+	t.Cleanup(func() {
+		syncWebhookPrivateHTTPClient = oldClient
+		syncWebhookRequestTimeout = oldTimeout
+	})
+
+	syncWebhookRequestTimeout = 20 * time.Millisecond
+	ctxErr := make(chan error, 1)
+	syncWebhookPrivateHTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			<-req.Context().Done()
+			err := req.Context().Err()
+			ctxErr <- err
+			return nil, err
+		}),
+	}
+
+	start := time.Now()
+	err := a.postSyncWebhook(context.Background(), SyncOptions{
+		WebhookURL:          "https://example.test/hook",
+		WebhookAllowPrivate: true,
+	}, wa.ParsedMessage{ID: "m-timeout"})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("webhook timeout took %s, want under 1s", elapsed)
+	}
+	select {
+	case err := <-ctxErr:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("request context error = %v, want deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("transport did not observe request context cancellation")
 	}
 }
