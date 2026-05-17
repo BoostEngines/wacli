@@ -146,3 +146,38 @@ func TestSyncTTYWarningBreaksThroughStatusLine(t *testing.T) {
 		t.Fatalf("connected status should not become a separate noisy line:\n%q", raw)
 	}
 }
+
+func TestSyncRefreshFailuresWarnAndContinue(t *testing.T) {
+	a := newTestApp(t)
+	f := newFakeWA()
+	f.getAllContactsErr = errors.New("contacts offline")
+	f.getJoinedGroupsErr = errors.New("groups offline")
+	f.getSubscribedNewslettersErr = errors.New("channels offline")
+	a.wa = f
+
+	raw := captureStderr(t, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, err := a.Sync(ctx, SyncOptions{
+			Mode:            SyncModeOnce,
+			AllowQR:         false,
+			IdleExit:        time.Millisecond,
+			RefreshContacts: true,
+			RefreshGroups:   true,
+			RefreshChannels: true,
+		})
+		if err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+	})
+
+	for _, want := range []string{
+		"warning: failed to refresh contacts: contacts offline\n",
+		"warning: failed to refresh groups: groups offline\n",
+		"warning: failed to refresh channels: channels offline\n",
+	} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("missing warning %q in:\n%q", want, raw)
+		}
+	}
+}

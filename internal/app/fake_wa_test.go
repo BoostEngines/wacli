@@ -41,23 +41,26 @@ type fakeWA struct {
 	news     map[types.JID]*types.NewsletterMetadata
 	lids     map[types.JID]types.JID
 
-	decryptedReaction   *waProto.ReactionMessage
-	decryptReactionErr  error
-	sendPollCalls       []fakeSendPollCall
-	sendPollVoteCalls   []fakeSendPollVoteCall
-	decryptPollVoteFunc func(evt *events.Message) (*waE2E.PollVoteMessage, error)
-	decryptSecretFunc   func(evt *events.Message) (*waE2E.Message, error)
-	onDemandHistory     func(lastKnown types.MessageInfo, count int) *events.HistorySync
-	onDemandEvent       func(lastKnown types.MessageInfo, count int) interface{}
-	downloadHistory     func(notif *waE2E.HistorySyncNotification) (*waHistorySync.HistorySync, error)
-	deleteHistoryCalls  []*waE2E.HistorySyncNotification
-	appStateRecoveryErr error
-	appStateFetchErr    error
-	appStateFetchEvent  func(name string, fullSync, onlyIfNotSynced bool) interface{}
-	archiveCalls        []fakeArchiveCall
-	pinCalls            []fakePinCall
-	muteCalls           []fakeMuteCall
-	markReadCalls       []fakeMarkReadCall
+	getAllContactsErr           error
+	getJoinedGroupsErr          error
+	getSubscribedNewslettersErr error
+	decryptedReaction           *waProto.ReactionMessage
+	decryptReactionErr          error
+	sendPollCalls               []fakeSendPollCall
+	sendPollVoteCalls           []fakeSendPollVoteCall
+	decryptPollVoteFunc         func(evt *events.Message) (*waE2E.PollVoteMessage, error)
+	decryptSecretFunc           func(evt *events.Message) (*waE2E.Message, error)
+	onDemandHistory             func(lastKnown types.MessageInfo, count int) *events.HistorySync
+	onDemandEvent               func(lastKnown types.MessageInfo, count int) interface{}
+	downloadHistory             func(notif *waE2E.HistorySyncNotification) (*waHistorySync.HistorySync, error)
+	deleteHistoryCalls          []*waE2E.HistorySyncNotification
+	appStateRecoveryErr         error
+	appStateFetchErr            error
+	appStateFetchEvent          func(name string, fullSync, onlyIfNotSynced bool) interface{}
+	archiveCalls                []fakeArchiveCall
+	pinCalls                    []fakePinCall
+	muteCalls                   []fakeMuteCall
+	markReadCalls               []fakeMarkReadCall
 
 	manualHistorySyncCalls []bool
 	appStateRecoveries     []string
@@ -265,6 +268,9 @@ func (f *fakeWA) GetContact(ctx context.Context, jid types.JID) (types.ContactIn
 func (f *fakeWA) GetAllContacts(ctx context.Context) (map[types.JID]types.ContactInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.getAllContactsErr != nil {
+		return nil, f.getAllContactsErr
+	}
 	out := make(map[types.JID]types.ContactInfo, len(f.contacts))
 	for k, v := range f.contacts {
 		out[k] = v
@@ -275,6 +281,9 @@ func (f *fakeWA) GetAllContacts(ctx context.Context) (map[types.JID]types.Contac
 func (f *fakeWA) GetJoinedGroups(ctx context.Context) ([]*types.GroupInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.getJoinedGroupsErr != nil {
+		return nil, f.getJoinedGroupsErr
+	}
 	out := make([]*types.GroupInfo, 0, len(f.groups))
 	for _, g := range f.groups {
 		out = append(out, g)
@@ -359,6 +368,9 @@ func (f *fakeWA) UnfollowNewsletter(ctx context.Context, jid types.JID) error { 
 func (f *fakeWA) GetSubscribedNewsletters(ctx context.Context) ([]*types.NewsletterMetadata, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.getSubscribedNewslettersErr != nil {
+		return nil, f.getSubscribedNewslettersErr
+	}
 	out := make([]*types.NewsletterMetadata, 0, len(f.news))
 	for _, meta := range f.news {
 		out = append(out, meta)

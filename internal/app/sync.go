@@ -130,13 +130,31 @@ func (a *App) Sync(ctx context.Context, opts SyncOptions) (SyncResult, error) {
 
 	// Optional: bootstrap imports (helps contacts/groups management without waiting for events).
 	if opts.RefreshContacts {
-		_ = a.refreshContacts(syncCtx)
+		if err := a.refreshContacts(syncCtx); err != nil {
+			a.emitWarning(
+				"refresh_contacts_failed",
+				fmt.Sprintf("warning: failed to refresh contacts: %v", err),
+				map[string]any{"error": err.Error()},
+			)
+		}
 	}
 	if opts.RefreshGroups {
-		_ = a.refreshGroups(syncCtx)
+		if err := a.refreshGroups(syncCtx); err != nil {
+			a.emitWarning(
+				"refresh_groups_failed",
+				fmt.Sprintf("warning: failed to refresh groups: %v", err),
+				map[string]any{"error": err.Error()},
+			)
+		}
 	}
 	if opts.RefreshChannels {
-		_ = a.refreshNewsletters(syncCtx)
+		if err := a.refreshNewsletters(syncCtx); err != nil {
+			a.emitWarning(
+				"refresh_channels_failed",
+				fmt.Sprintf("warning: failed to refresh channels: %v", err),
+				map[string]any{"error": err.Error()},
+			)
+		}
 	}
 	if opts.AfterConnect != nil {
 		if err := opts.AfterConnect(syncCtx); err != nil {
