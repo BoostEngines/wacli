@@ -77,6 +77,9 @@ func (a *App) addSyncEventHandler(ctx context.Context, opts SyncOptions, message
 		case *events.Star:
 			lastEvent.Store(nowUTC().UnixNano())
 			a.handleStarEvent(ctx, v)
+		case *events.Receipt:
+			lastEvent.Store(nowUTC().UnixNano())
+			a.handleReceiptEvent(ctx, v)
 		case *events.DeleteForMe:
 			lastEvent.Store(nowUTC().UnixNano())
 			a.handleDeleteForMeEvent(ctx, v)
@@ -104,6 +107,20 @@ func (a *App) addSyncEventHandler(ctx context.Context, opts SyncOptions, message
 			a.handleAppStateSyncError(ctx, v, &appStateRecoveries)
 		}
 	})
+}
+
+func (a *App) handleReceiptEvent(ctx context.Context, evt *events.Receipt) {
+	if evt == nil || evt.Type != types.ReceiptTypeReadSelf || evt.Chat.IsEmpty() {
+		return
+	}
+	chat := a.canonicalStoreJID(ctx, evt.Chat)
+	if err := a.db.SetChatUnreadCount(canonicalJIDString(chat), 0); err != nil {
+		a.emitWarning(
+			"receipt_read_self_store_failed",
+			fmt.Sprintf("warning: failed to clear unread count from read-self receipt for chat %s: %v", chat, err),
+			map[string]any{"chat_jid": chat.String(), "error": err.Error()},
+		)
+	}
 }
 
 func (a *App) handleDeleteForMeEvent(ctx context.Context, evt *events.DeleteForMe) {

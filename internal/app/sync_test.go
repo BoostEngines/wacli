@@ -113,6 +113,83 @@ func TestLiveSyncIncrementsUnreadCountForIncomingMessages(t *testing.T) {
 	}
 }
 
+func TestSyncEventHandlerClearsUnreadCountOnReadSelfReceipt(t *testing.T) {
+	a := newTestApp(t)
+	f := newFakeWA()
+	a.wa = f
+
+	chat := types.JID{User: "123", Server: types.DefaultUserServer}
+	if err := a.db.SetChatUnreadCount(chat.String(), 3); err != nil {
+		t.Fatalf("seed unread count: %v", err)
+	}
+
+	var messagesStored atomic.Int64
+	var lastEvent atomic.Int64
+	a.addSyncEventHandler(
+		context.Background(),
+		SyncOptions{},
+		&messagesStored,
+		&lastEvent,
+		make(chan struct{}, 1),
+		func(string, string) {},
+		nil,
+		nil,
+	)
+	f.emit(&events.Receipt{
+		MessageSource: types.MessageSource{Chat: chat},
+		MessageIDs:    []types.MessageID{"incoming-1", "incoming-2"},
+		Type:          types.ReceiptTypeReadSelf,
+	})
+
+	c, err := a.db.GetChat(chat.String())
+	if err != nil {
+		t.Fatalf("GetChat: %v", err)
+	}
+	if c.Unread || c.UnreadCount != 0 {
+		t.Fatalf("unread state after read-self receipt = %+v, want clear", c)
+	}
+	if lastEvent.Load() == 0 {
+		t.Fatal("read-self receipt did not update last event timestamp")
+	}
+}
+
+func TestSyncEventHandlerIgnoresRegularReadReceiptsForUnreadCount(t *testing.T) {
+	a := newTestApp(t)
+	f := newFakeWA()
+	a.wa = f
+
+	chat := types.JID{User: "123", Server: types.DefaultUserServer}
+	if err := a.db.SetChatUnreadCount(chat.String(), 3); err != nil {
+		t.Fatalf("seed unread count: %v", err)
+	}
+
+	var messagesStored atomic.Int64
+	var lastEvent atomic.Int64
+	a.addSyncEventHandler(
+		context.Background(),
+		SyncOptions{},
+		&messagesStored,
+		&lastEvent,
+		make(chan struct{}, 1),
+		func(string, string) {},
+		nil,
+		nil,
+	)
+	f.emit(&events.Receipt{
+		MessageSource: types.MessageSource{Chat: chat},
+		MessageIDs:    []types.MessageID{"incoming-1"},
+		Type:          types.ReceiptTypeRead,
+	})
+
+	c, err := a.db.GetChat(chat.String())
+	if err != nil {
+		t.Fatalf("GetChat: %v", err)
+	}
+	if !c.Unread || c.UnreadCount != 3 {
+		t.Fatalf("unread state after regular read receipt = %+v, want unchanged count 3", c)
+	}
+}
+
 func TestLiveSyncDoesNotIncrementUnreadForOwnMessagesOrStatus(t *testing.T) {
 	a := newTestApp(t)
 	f := newFakeWA()

@@ -12,6 +12,7 @@
 ### Fixed
 
 - Sync: reconnect after WhatsApp replaces the linked-device stream instead of leaving `sync --follow` offline. (#266 - thanks @ngutman)
+- Sync: clear chat unread state from `ReceiptTypeReadSelf` receipts so linked-device reads still update when `regular_high` app-state sync is unhealthy. (#269 - thanks @p-jackson1)
 
 ## 0.11.0 - 2026-05-22
 
