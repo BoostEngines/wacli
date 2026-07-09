@@ -32,6 +32,12 @@ jobs:
       - name: pnpm lint
         run: pnpm -s lint
 
+      - name: Verify exact Go security floor
+        run: test "$(go env GOVERSION)" = "go1.25.12"
+
+      - name: govulncheck source
+        run: pnpm -s govulncheck:source
+
       - name: deadcode
         env:
           CGO_ENABLED: "1"

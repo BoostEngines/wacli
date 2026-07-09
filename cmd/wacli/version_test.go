@@ -14,7 +14,7 @@ func TestVersionCommandUsesConfiguredOutput(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("version command: %v", err)
 	}
-	if got, want := out.String(), version+"\n"; got != want {
+	if got, want := out.String(), effectiveVersion()+"\n"; got != want {
 		t.Fatalf("version output = %q, want %q", got, want)
 	}
 }

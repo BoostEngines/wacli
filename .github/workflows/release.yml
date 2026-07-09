@@ -1,202 +1,143 @@
-name: release
+name: release-builds
+run-name: release-builds commit=${{ inputs.commit }} version=${{ inputs.version }}
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Tag to (re)release (e.g. v0.1.0)"
+      commit:
+        description: "Full protected-main commit SHA to build"
+        required: true
+        type: string
+      version:
+        description: "Release version without v (for example 0.12.1)"
         required: true
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  goreleaser-darwin:
-    runs-on: macos-15
+  cross-platform:
+    if: >-
+      ${{
+        github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+        github.workflow_ref == format('{0}/.github/workflows/release.yml@refs/heads/{1}', github.repository, github.event.repository.default_branch)
+      }}
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout protected release tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          path: trusted
+          persist-credentials: false
+          ref: ${{ github.sha }}
 
-      - name: Setup Go
-        uses: ./.github/actions/setup-ci-env
-        with:
-          go-version-file: go.mod
-
-      - name: Stash GoReleaser config
-        run: |
-          cp .goreleaser.yaml /tmp/.goreleaser.yaml
-          if ! grep -q '^release:' /tmp/.goreleaser.yaml; then
-            printf '\nrelease:\n  mode: replace\n' >> /tmp/.goreleaser.yaml
-          fi
-
-      - name: Generate release notes from changelog
+      - name: Validate selected commit
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          INPUT_TAG: ${{ inputs.tag }}
-          REF_NAME: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ inputs.commit }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TRUSTED_WORKFLOW_SHA: ${{ github.sha }}
         run: |
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            release_tag="$INPUT_TAG"
-          else
-            release_tag="$REF_NAME"
-          fi
-          helper=scripts/extract-release-notes.mjs
-          if [ ! -f "$helper" ]; then
-            git fetch --no-tags origin main
-            git show origin/main:scripts/extract-release-notes.mjs > /tmp/extract-release-notes.mjs
-            helper=/tmp/extract-release-notes.mjs
-          fi
-          node "$helper" --tag "$release_tag" --output /tmp/release-notes.md
-
-      - name: GoReleaser (macOS universal)
-        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
-        with:
-          distribution: goreleaser
-          version: v2.16.0
-          args: release --clean --config /tmp/.goreleaser.yaml --release-notes /tmp/release-notes.md
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  update-homebrew-tap:
-    runs-on: ubuntu-latest
-    needs: goreleaser-linux-windows
-    steps:
-      - name: Resolve release tag
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          INPUT_TAG: ${{ inputs.tag }}
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "RELEASE_TAG=$INPUT_TAG" >> "$GITHUB_ENV"
-          else
-            echo "RELEASE_TAG=$REF_NAME" >> "$GITHUB_ENV"
-          fi
-
-      - name: Dispatch tap formula update
-        env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "::warning::Skipping Homebrew tap update because HOMEBREW_TAP_TOKEN is not configured with workflow access to openclaw/homebrew-tap"
-            exit 0
-          fi
-
-          request_id="wacli-${RELEASE_TAG}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          expected_title="Update wacli for ${RELEASE_TAG} (${request_id})"
-
-          gh workflow run update-formula.yml \
-            --repo openclaw/homebrew-tap \
-            --ref main \
-            -f formula=wacli \
-            -f tag="$RELEASE_TAG" \
-            -f repository=openclaw/wacli \
-            -f description="WhatsApp CLI built on whatsmeow" \
-            -f artifact_template="{formula}_{version}_{target}.tar.gz" \
-            -f request_id="$request_id"
-
-          run_id=""
-          for _ in {1..30}; do
-            run_id=$(gh run list \
-              --repo openclaw/homebrew-tap \
-              --workflow update-formula.yml \
-              --branch main \
-              --event workflow_dispatch \
-              --limit 20 \
-              --json databaseId,displayTitle \
-              --jq ".[] | select(.displayTitle == \"$expected_title\") | .databaseId" | head -n1)
-            if [ -n "$run_id" ]; then
-              break
-            fi
-            sleep 5
-          done
-
-          if [ -z "$run_id" ]; then
-            echo "::error::Could not find tap workflow run with title: $expected_title"
+          test "$(git -C trusted rev-parse HEAD)" = "$TRUSTED_WORKFLOW_SHA"
+          if [[ ! "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::commit must be a full lowercase SHA"
             exit 1
           fi
+          git -C trusted cat-file -e "${RELEASE_COMMIT}^{commit}"
+          git -C trusted merge-base --is-ancestor "$RELEASE_COMMIT" "origin/$DEFAULT_BRANCH"
 
-          gh run watch "$run_id" \
-            --repo openclaw/homebrew-tap \
-            --exit-status \
-            --interval 10
-
-  goreleaser-linux-windows:
-    runs-on: ubuntu-latest
-    needs: goreleaser-darwin
-    steps:
-      - name: Checkout
+      - name: Checkout candidate source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          path: source
+          persist-credentials: false
+          ref: ${{ inputs.commit }}
+
+      - name: Validate candidate version
+        env:
+          RELEASE_COMMIT: ${{ inputs.commit }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must look like X.Y.Z"
+            exit 1
+          fi
+          test "$(git -C source rev-parse HEAD)" = "$RELEASE_COMMIT"
+          grep -qx 'go 1.25.12' source/go.mod
+          grep -q "var version = \"${RELEASE_VERSION}\"" source/cmd/wacli/root.go
+          grep -Eq "^## ${RELEASE_VERSION} - [0-9]{4}-[0-9]{2}-[0-9]{2}$" source/CHANGELOG.md
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
 
       - name: Setup Go
-        uses: ./.github/actions/setup-ci-env
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version-file: go.mod
-          apt-packages: "build-essential gcc-aarch64-linux-gnu libc6-dev-arm64-cross mingw-w64"
+          go-version-file: source/go.mod
+          cache-dependency-path: source/go.sum
+          cache: true
 
-      - name: Stash GoReleaser config
-        run: cp .goreleaser-linux-windows.yaml /tmp/.goreleaser-linux-windows.yaml
+      - name: Install cross compilers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential gcc-aarch64-linux-gnu libc6-dev-arm64-cross mingw-w64
 
-      - name: GoReleaser (linux/windows)
+      - name: Install GoReleaser
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
           distribution: goreleaser
           version: v2.16.0
-          args: release --clean --skip=publish --config /tmp/.goreleaser-linux-windows.yaml
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          install-only: true
 
-      - name: Resolve release tag
+      - name: Build credential-free Linux and Windows assets
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          INPUT_TAG: ${{ inputs.tag }}
-          REF_NAME: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "RELEASE_TAG=$INPUT_TAG" >> "$GITHUB_ENV"
-          else
-            echo "RELEASE_TAG=$REF_NAME" >> "$GITHUB_ENV"
-          fi
+          git -C source -c tag.gpgSign=false tag "v${RELEASE_VERSION}"
+          mkdir -m 700 "$RUNNER_TEMP/build-home"
+          cd source
+          env -i \
+            CGO_ENABLED=1 \
+            GOTOOLCHAIN=local \
+            HOME="$RUNNER_TEMP/build-home" \
+            PATH="$PATH" \
+            TMPDIR="$RUNNER_TEMP" \
+            goreleaser release --clean --skip=publish --config .goreleaser-linux-windows.yaml
 
-      - name: Create combined checksums
+      - name: Collect exact cross-platform assets with protected tooling
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_COMMIT: ${{ inputs.commit }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          gh release download "$RELEASE_TAG" \
-            --pattern "wacli_*_darwin_*.tar.gz" \
-            --dir dist
+          env -i \
+            HOME="$RUNNER_TEMP/build-home" \
+            PATH="$PATH" \
+            TMPDIR="$RUNNER_TEMP" \
+            node trusted/scripts/collect-cross-platform-assets.mjs \
+              --source source/dist \
+              --output cross-assets \
+              --version "$RELEASE_VERSION" \
+              --commit "$RELEASE_COMMIT" \
+              --repository "$GITHUB_REPOSITORY" \
+              --workflow-path .github/workflows/release.yml \
+              --workflow-ref "$GITHUB_WORKFLOW_REF" \
+              --workflow-sha "$GITHUB_SHA" \
+              --run-id "$GITHUB_RUN_ID" \
+              --run-attempt "$GITHUB_RUN_ATTEMPT" \
+              --event "$GITHUB_EVENT_NAME" \
+              --ref "$GITHUB_REF"
 
-          cd dist
-          archives=(
-            "wacli_${RELEASE_TAG#v}_darwin_amd64.tar.gz"
-            "wacli_${RELEASE_TAG#v}_darwin_arm64.tar.gz"
-            "wacli_${RELEASE_TAG#v}_darwin_universal.tar.gz"
-            "wacli_${RELEASE_TAG#v}_linux_amd64.tar.gz"
-            "wacli_${RELEASE_TAG#v}_linux_arm64.tar.gz"
-            "wacli_${RELEASE_TAG#v}_windows_amd64.zip"
-          )
-          sha256sum "${archives[@]}" > checksums.txt
-
-      - name: Upload release artifacts
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "$RELEASE_TAG" \
-            "dist/wacli_${RELEASE_TAG#v}_linux_amd64.tar.gz" \
-            "dist/wacli_${RELEASE_TAG#v}_linux_arm64.tar.gz" \
-            "dist/wacli_${RELEASE_TAG#v}_windows_amd64.zip" \
-            dist/checksums.txt \
-            --clobber
+      - name: Upload credential-free build output
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wacli-${{ inputs.version }}-cross-${{ inputs.commit }}
+          path: cross-assets/*
+          if-no-files-found: error
+          retention-days: 7

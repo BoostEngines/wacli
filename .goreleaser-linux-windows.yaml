@@ -14,7 +14,7 @@ builds:
     tags:
       - sqlite_fts5
     ldflags:
-      - -s -w -X main.version={{.Version}}
+      - -s -w -X main.version={{.Version}} -X main.releaseLinkerSetting=wacli-release-linker-version=[{{.Version}}]
     goos:
       - linux
     goarch:
@@ -32,7 +32,7 @@ builds:
     tags:
       - sqlite_fts5
     ldflags:
-      - -s -w -X main.version={{.Version}}
+      - -s -w -X main.version={{.Version}} -X main.releaseLinkerSetting=wacli-release-linker-version=[{{.Version}}]
     goos:
       - linux
     goarch:
@@ -50,7 +50,7 @@ builds:
     tags:
       - sqlite_fts5
     ldflags:
-      - -s -w -X main.version={{.Version}}
+      - -s -w -X main.version={{.Version}} -X main.releaseLinkerSetting=wacli-release-linker-version=[{{.Version}}]
     goos:
       - windows
     goarch:

@@ -15,7 +15,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var version = "0.12.0"
+var version = "0.12.1"
+
+const releaseLinkerSettingPrefix = "wacli-release-linker-version=["
+
+var releaseLinkerSetting string
+
+func effectiveVersion() string {
+	if releaseLinkerSetting == "" || releaseLinkerSetting == releaseLinkerSettingPrefix+version+"]" {
+		return version
+	}
+	return "invalid-release-linker-version"
+}
 
 const docsURL = "https://wacli.sh"
 
@@ -39,7 +50,7 @@ func execute(args []string) error {
 		Long:          "wacli is a WhatsApp CLI for syncing, searching, and sending from local scripts.\n\nDocs: " + docsURL,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Version:       version,
+		Version:       effectiveVersion(),
 	}
 	rootCmd.SetVersionTemplate("wacli {{.Version}}\n")
 
@@ -108,7 +119,7 @@ func newApp(ctx context.Context, flags *rootFlags, needLock bool, allowUnauthed 
 
 	a, err := app.New(app.Options{
 		StoreDir:      storeDir,
-		Version:       version,
+		Version:       effectiveVersion(),
 		JSON:          flags.asJSON,
 		Events:        out.NewEventWriter(os.Stderr, flags.events),
 		AllowUnauthed: allowUnauthed,
