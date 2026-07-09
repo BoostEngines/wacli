@@ -1,12 +1,17 @@
 # Changelog
 
-## 0.12.1 - Unreleased
+## 0.12.1 - 2026-07-09
 
 ### Added
 
 ### Security
 
+- Build: require Go 1.25.12 and gate source plus release binaries with `govulncheck` so reachable GO-2026-5856 standard-library paths are excluded.
+- Release: sign all official macOS thin and universal binaries with the exact OpenClaw Foundation Developer ID metadata and designated requirement, hardened runtime, timestamp, and Apple notarization before draft upload; require naturally quarantined clean-VM execution as the standalone CLI Gatekeeper proof.
+
 ### Fixed
+
+- Release: move official publication to a local draft-first flow with authenticated cross-build provenance, separate protected-main native verification, a signed annotated exact tag, verified public-release and Homebrew manifests, and credential-free CI builds.
 
 ## 0.12.0 - 2026-07-06
 
