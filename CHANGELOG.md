@@ -9,6 +9,11 @@
 ### Fixed
 
 - Store: normalize Windows drive paths before generating SQLite file URIs to prevent invalid URI authority errors. (#304 - thanks @goutamadwant)
+## Unreleased
+
+### Fixed
+
+- Messages: preserve quoted-message context when replying to stored incoming or outgoing text messages. (thanks @odilorg)
 
 ## 0.12.1 - 2026-07-09
 
