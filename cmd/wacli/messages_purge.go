@@ -54,8 +54,8 @@ restore the payload. Live messages must first receive an explicit deletion event
 				if flags.asJSON {
 					return out.WriteJSON(os.Stdout, map[string]any{"would_purge": 1, "message": msg})
 				}
-				fmt.Fprintf(os.Stderr, "Would permanently purge tombstoned message %s in %s.\n", sanitize(id), sanitize(chat))
-				return nil
+				fmt.Fprintf(os.Stderr, "Would permanently purge this tombstoned message payload:\n")
+				return writeMessageShow(os.Stdout, msg)
 			}
 			if !confirm {
 				fmt.Fprintf(os.Stderr, "Permanently purge retained payload for message %s in %s? This cannot be undone. [y/N] ", sanitize(id), sanitize(chat))
