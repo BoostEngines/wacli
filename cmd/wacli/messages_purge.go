@@ -66,7 +66,11 @@ restore the payload. Live messages must first receive an explicit deletion event
 					return nil
 				}
 			}
-			if _, err := deleteLocalMediaIfRequested(true, msg.LocalPath); err != nil {
+			mediaPaths, err := a.DB().MessageLocalMediaPaths(chat, id)
+			if err != nil {
+				return fmt.Errorf("load retained local media paths: %w", err)
+			}
+			if _, err := deleteLocalMediaPathsIfRequested(true, mediaPaths); err != nil {
 				return fmt.Errorf("delete retained local media: %w", err)
 			}
 			if err := a.DB().PurgeMessage(chat, id); err != nil {

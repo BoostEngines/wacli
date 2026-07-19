@@ -35,6 +35,23 @@ var schemaMigrations = []migration{
 	{version: 19, name: "messages quoted columns", up: migrateMessagesQuotedColumns},
 	{version: 20, name: "messages media_unavailable_at column", up: migrateMessagesMediaUnavailableColumn},
 	{version: 21, name: "message tombstone metadata", up: migrateMessageTombstoneMetadata},
+	{version: 22, name: "message local media aliases", up: ensureMessageLocalMediaAliasesTable},
+}
+
+func ensureMessageLocalMediaAliasesTable(d *DB) error {
+	if _, err := d.sql.Exec(`
+		CREATE TABLE IF NOT EXISTS message_local_media_aliases (
+			chat_jid TEXT NOT NULL,
+			msg_id TEXT NOT NULL,
+			local_path TEXT NOT NULL,
+			downloaded_at INTEGER,
+			PRIMARY KEY (chat_jid, msg_id, local_path),
+			FOREIGN KEY (chat_jid, msg_id) REFERENCES messages(chat_jid, msg_id) ON DELETE CASCADE
+		)
+	`); err != nil {
+		return fmt.Errorf("ensure message local media aliases: %w", err)
+	}
+	return nil
 }
 
 func migrateMessageTombstoneMetadata(d *DB) error {
@@ -220,6 +237,9 @@ func (d *DB) ensureCurrentSchema() error {
 	}
 	if err := ensureMessagePayloadPurgesTable(d); err != nil {
 		return fmt.Errorf("ensure current message payload purge ledger: %w", err)
+	}
+	if err := ensureMessageLocalMediaAliasesTable(d); err != nil {
+		return fmt.Errorf("ensure current message local media aliases: %w", err)
 	}
 	return nil
 }

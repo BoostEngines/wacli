@@ -19,6 +19,7 @@
 
 ### Fixed
 
+- Store: preserve duplicate local media paths across LID-to-phone-number migration so a later payload purge erases every retained copy.
 - Send: delegate `messages edit` through a running `sync --follow` process like other send commands, so edits no longer always fail with `store is locked` while continuous sync owns the store. (#310 - thanks @Umair444)
 - Send: allow text replies to quote stored documents and other supported media by rebuilding their saved message content. (#307 - thanks @suifatt7799-oss)
 
