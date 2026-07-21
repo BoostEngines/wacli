@@ -1,0 +1,280 @@
+name: 🚀 Deploy operax-wacli via Aliyun Cloud Assistant
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_ref:
+        description: "Exact upstream release tag to deploy"
+        required: true
+        default: "v0.13.0"
+
+concurrency:
+  group: deploy-operax-wacli
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  ALI_REGION: ap-southeast-1
+  OSS_BUCKET: operax-deploy-sg
+  OSS_ENDPOINT_INTERNAL: oss-ap-southeast-1-internal.aliyuncs.com
+  ADMIN_ALERT_URL: https://sa.boostengine.ai/api/alerts/ingest
+  DEPLOY_REF: ${{ inputs.release_ref }}
+
+jobs:
+  deploy:
+    name: Build and deploy native wacli
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ env.DEPLOY_REF }}
+
+      - name: Verify exact published upstream release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -c '
+          import re, sys
+          if re.fullmatch(r"v\d+\.\d+\.\d+", sys.argv[1]) is None:
+              raise SystemExit("release_ref must be an exact semantic version tag")
+          ' "$DEPLOY_REF"
+
+          RELEASE_JSON=$(gh api "repos/openclaw/wacli/releases/tags/$DEPLOY_REF")
+          python3 -c '
+          import json, sys
+          release = json.load(sys.stdin)
+          if release.get("draft") or release.get("prerelease"):
+              raise SystemExit("release is draft or prerelease")
+          if release.get("tag_name") != sys.argv[1]:
+              raise SystemExit("release tag mismatch")
+          ' "$DEPLOY_REF" <<<"$RELEASE_JSON"
+
+          test "$(git describe --tags --exact-match HEAD)" = "$DEPLOY_REF"
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test and build native wacli
+        run: |
+          set -euo pipefail
+          go test ./...
+          go test -tags sqlite_fts5 ./...
+          mkdir -p dist
+          CGO_ENABLED=1 CGO_CFLAGS="-Wno-error=missing-braces" \
+            go build -tags sqlite_fts5 -trimpath -ldflags="-s -w" \
+              -o dist/wacli ./cmd/wacli
+          dist/wacli --version
+          dist/wacli --help >/dev/null
+          DEPLOY_SHA=$(git rev-parse HEAD)
+          WACLI_VERSION=$(dist/wacli --version | awk '{print $2}')
+          printf '%s\n' "$WACLI_VERSION" > dist/VERSION
+          echo "DEPLOY_SHA=$DEPLOY_SHA" >> "$GITHUB_ENV"
+          echo "WACLI_VERSION=$WACLI_VERSION" >> "$GITHUB_ENV"
+
+      - name: Package native artifact
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${DEPLOY_SHA::7}"
+          ARTIFACT="/tmp/operax-wacli-${SHORT_SHA}.tar.gz"
+          tar czf "$ARTIFACT" -C dist wacli VERSION
+          echo "ARTIFACT=$ARTIFACT" >> "$GITHUB_ENV"
+          ls -lh "$ARTIFACT"
+
+      - name: Install aliyun CLI
+        run: |
+          curl -sSL -o /tmp/aliyun-cli.tgz \
+            https://github.com/aliyun/aliyun-cli/releases/download/v3.3.8/aliyun-cli-linux-3.3.8-amd64.tgz
+          tar xzf /tmp/aliyun-cli.tgz -C /tmp
+          sudo mv /tmp/aliyun /usr/local/bin/aliyun
+          aliyun version
+
+      - name: Configure aliyun CLI
+        env:
+          ALI_AK: ${{ secrets.ALI_ACCESS_KEY_ID }}
+          ALI_SK: ${{ secrets.ALI_ACCESS_KEY_SECRET }}
+        run: |
+          aliyun configure set --profile default --mode AK \
+            --region "$ALI_REGION" \
+            --access-key-id "$ALI_AK" \
+            --access-key-secret "$ALI_SK"
+
+      - name: Upload artifact to OSS
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${DEPLOY_SHA::7}"
+          KEY="deploy/operax-wacli-${SHORT_SHA}.tar.gz"
+          aliyun oss cp "$ARTIFACT" "oss://${OSS_BUCKET}/${KEY}" \
+            --region "$ALI_REGION" -f
+          SIGNED_URL=$(aliyun oss sign "oss://${OSS_BUCKET}/${KEY}" \
+            --region "$ALI_REGION" --timeout 3600 \
+            --endpoint "$OSS_ENDPOINT_INTERNAL" | head -1)
+          echo "SIGNED_URL=$SIGNED_URL" >> "$GITHUB_ENV"
+
+      - name: Deploy native binary to sg-host
+        env:
+          INSTANCE_ID: ${{ secrets.ALI_ECS_INSTANCE_ID_SG }}
+          ADMIN_ALERT_SECRET: ${{ secrets.ADMIN_ALERT_SECRET }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          ACTIONS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TEMPLATE=$(cat <<'DEPLOY_EOF'
+          set -Eeuo pipefail
+
+          DEPLOY_ROOT=/opt/operax-wacli
+          RELEASES_DIR=/opt/operax-wacli/releases
+          CURRENT_LINK="$DEPLOY_ROOT/current"
+          NEXT_LINK="$DEPLOY_ROOT/.current-next"
+          SHORT_SHA="${DEPLOY_SHA:0:7}"
+          RELEASE_DIR="$RELEASES_DIR/$SHORT_SHA"
+          PREVIOUS_TARGET=""
+
+          exec 200>"/tmp/deploy-operax-wacli.lock"
+          if ! flock -n 200; then
+            echo "ERROR: another operax-wacli deploy is in progress"
+            exit 1
+          fi
+
+          notify() {
+            local LEVEL="$1" TITLE="$2" CONTENT="$3" EVENT_TEXT="$4"
+            curl -sf --max-time 10 "$ADMIN_ALERT_ENDPOINT" \
+              -H "Content-Type: application/json" \
+              -H "x-cron-secret: $ADMIN_ALERT_TOKEN" \
+              -d "{
+                \"level\": \"${LEVEL}\",
+                \"title\": \"${TITLE}\",
+                \"ruleType\": \"deploy_status\",
+                \"targetType\": \"deploy\",
+                \"targetId\": \"operax-wacli:${SHORT_SHA}\",
+                \"content\": \"${CONTENT}\",
+                \"detailUrl\": \"$ACTIONS_RUN_URL\",
+                \"fields\": [
+                  {\"label\": \"项目\", \"value\": \"operax-wacli\"},
+                  {\"label\": \"版本\", \"value\": \"${WACLI_VERSION} (${SHORT_SHA})\"},
+                  {\"label\": \"区域\", \"value\": \"ap-southeast-1\"}
+                ],
+                \"eventText\": \"${EVENT_TEXT}\",
+                \"deployer\": \"$GITHUB_ACTOR\"
+              }" 2>/dev/null || true
+          }
+
+          rollback_on_error() {
+            local STATUS=$?
+            trap - ERR
+            if [ -n "$PREVIOUS_TARGET" ] && [ -d "$PREVIOUS_TARGET" ]; then
+              ln -sfn "$PREVIOUS_TARGET" "$NEXT_LINK"
+              mv -Tf "$NEXT_LINK" "$CURRENT_LINK"
+              notify "warning" "operax-wacli 部署失败，已自动回滚" \
+                "失败版本: ${WACLI_VERSION} (${SHORT_SHA})" \
+                "$(date '+%Y-%m-%d %H:%M:%S') 部署失败，已自动回滚"
+            else
+              notify "critical" "operax-wacli 部署失败" \
+                "版本: ${WACLI_VERSION} (${SHORT_SHA})" \
+                "$(date '+%Y-%m-%d %H:%M:%S') 部署失败"
+            fi
+            exit "$STATUS"
+          }
+          trap rollback_on_error ERR
+
+          mkdir -p "$RELEASES_DIR"
+          PREVIOUS_TARGET=$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)
+          STAGING_DIR=$(mktemp -d /tmp/operax-wacli-staging.XXXXXX)
+          curl -fsSL -o "$STAGING_DIR/artifact.tar.gz" "$OSS_SIGNED_URL"
+          tar xzf "$STAGING_DIR/artifact.tar.gz" -C "$STAGING_DIR"
+          test "$(cat "$STAGING_DIR/VERSION")" = "$WACLI_VERSION"
+
+          mkdir -p "$RELEASE_DIR"
+          install -m 0755 "$STAGING_DIR/wacli" "$RELEASE_DIR/wacli"
+          printf '%s\n' "$DEPLOY_SHA" > "$RELEASE_DIR/COMMIT_SHA"
+          "$RELEASE_DIR/wacli" --version
+          "$RELEASE_DIR/wacli" --help >/dev/null
+
+          ln -sfn "$RELEASE_DIR" "$NEXT_LINK"
+          mv -Tf "$NEXT_LINK" "$CURRENT_LINK"
+          test "$(readlink -f "$CURRENT_LINK")" = "$RELEASE_DIR"
+          "$CURRENT_LINK/wacli" --version
+          rm -rf "$STAGING_DIR"
+
+          trap - ERR
+          notify "info" "operax-wacli 部署成功" \
+            "版本: ${WACLI_VERSION} (${SHORT_SHA})" \
+            "$(date '+%Y-%m-%d %H:%M:%S') 部署成功 ${WACLI_VERSION}"
+          DEPLOY_EOF
+          )
+
+          SIGNED_LINE=$(printf 'export OSS_SIGNED_URL=%q' "$SIGNED_URL")
+          ALERT_EP_LINE=$(printf 'export ADMIN_ALERT_ENDPOINT=%q' "$ADMIN_ALERT_URL")
+          ALERT_TK_LINE=$(printf 'export ADMIN_ALERT_TOKEN=%q' "$ADMIN_ALERT_SECRET")
+          ACTOR_LINE=$(printf 'export GITHUB_ACTOR=%q' "$GITHUB_ACTOR")
+          FINAL_SCRIPT="#!/bin/bash
+          export DEPLOY_SHA='${DEPLOY_SHA}'
+          export WACLI_VERSION='${WACLI_VERSION}'
+          export ACTIONS_RUN_URL='${ACTIONS_URL}'
+          ${SIGNED_LINE}
+          ${ALERT_EP_LINE}
+          ${ALERT_TK_LINE}
+          ${ACTOR_LINE}
+          ${TEMPLATE}"
+          B64=$(printf '%s' "$FINAL_SCRIPT" | base64 -w0)
+
+          INVOKE_ID=$(aliyun ecs RunCommand --region "$ALI_REGION" \
+            --InstanceId.1 "$INSTANCE_ID" \
+            --Type RunShellScript \
+            --Timeout 600 \
+            --ContentEncoding Base64 \
+            --CommandContent "$B64" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['InvokeId'])")
+
+          for i in $(seq 1 50); do
+            sleep 6
+            RESULT=$(aliyun ecs DescribeInvocationResults --region "$ALI_REGION" \
+              --InvokeId "$INVOKE_ID")
+            STATUS=$(echo "$RESULT" | python3 -c \
+              "import sys,json; print(json.load(sys.stdin)['Invocation']['InvocationResults']['InvocationResult'][0]['InvocationStatus'])" \
+              2>/dev/null || echo Unknown)
+            echo "[$i] status=$STATUS"
+            case "$STATUS" in
+              Success)
+                echo "$RESULT" | python3 -c \
+                  "import sys,json,base64; r=json.load(sys.stdin)['Invocation']['InvocationResults']['InvocationResult'][0]; print(base64.b64decode(r['Output']).decode())"
+                exit 0 ;;
+              Failed|Error|Timeout|Cancelled|Stopped|PartialFailed)
+                echo "$RESULT" | python3 -c \
+                  "import sys,json,base64; r=json.load(sys.stdin)['Invocation']['InvocationResults']['InvocationResult'][0]; print(base64.b64decode(r.get('Output','')).decode())"
+                exit 1 ;;
+            esac
+          done
+          echo "::error::remote deployment polling timed out"
+          exit 1
+
+      - name: Notify deployment failure
+        if: failure()
+        env:
+          ADMIN_ALERT_SECRET: ${{ secrets.ADMIN_ALERT_SECRET }}
+        run: |
+          SHORT_SHA="${DEPLOY_SHA::7}"
+          curl -sf --max-time 10 "$ADMIN_ALERT_URL" \
+            -H "Content-Type: application/json" \
+            -H "x-cron-secret: $ADMIN_ALERT_SECRET" \
+            -d "{
+              \"level\": \"critical\",
+              \"title\": \"operax-wacli 部署失败\",
+              \"ruleType\": \"deploy_status\",
+              \"targetType\": \"deploy\",
+              \"targetId\": \"operax-wacli:${SHORT_SHA}\",
+              \"content\": \"CI/部署流程失败\",
+              \"detailUrl\": \"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\",
+              \"fields\": [
+                {\"label\": \"项目\", \"value\": \"operax-wacli\"},
+                {\"label\": \"版本\", \"value\": \"${WACLI_VERSION:-unknown} (${SHORT_SHA})\"},
+                {\"label\": \"区域\", \"value\": \"ap-southeast-1\"}
+              ],
+              \"eventText\": \"$(date -u '+%Y-%m-%d %H:%M:%S') 部署失败\",
+              \"deployer\": \"${{ github.actor }}\"
+            }" 2>/dev/null || true
