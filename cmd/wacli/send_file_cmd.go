@@ -18,6 +18,7 @@ func newSendFileCmd(flags *rootFlags) *cobra.Command {
 	var filename string
 	var caption string
 	var mimeOverride string
+	var mediaAs string
 	var replyTo string
 	var replyToSender string
 	var ptt bool
@@ -29,6 +30,10 @@ func newSendFileCmd(flags *rootFlags) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if to == "" || filePath == "" {
 				return fmt.Errorf("--to and --file are required")
+			}
+			mediaAs, err := validateSendFileMediaOptions(mediaAs, ptt)
+			if err != nil {
+				return err
 			}
 			if err := flags.requireWritable(); err != nil {
 				return err
@@ -51,6 +56,7 @@ func newSendFileCmd(flags *rootFlags) *cobra.Command {
 					Filename:       filename,
 					Caption:        caption,
 					MIME:           mimeOverride,
+					As:             mediaAs,
 					ReplyTo:        replyTo,
 					ReplyToSender:  replyToSender,
 					PTT:            ptt,
@@ -91,6 +97,7 @@ func newSendFileCmd(flags *rootFlags) *cobra.Command {
 					filename:      filename,
 					caption:       caption,
 					mimeOverride:  mimeOverride,
+					mediaAs:       mediaAs,
 					replyTo:       replyTo,
 					replyToSender: replyToSender,
 					ptt:           ptt,
@@ -126,6 +133,7 @@ func newSendFileCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&filename, "filename", "", "display name for the file (defaults to basename of --file)")
 	cmd.Flags().StringVar(&caption, "caption", "", "caption (images/videos/documents)")
 	cmd.Flags().StringVar(&mimeOverride, "mime", "", "override detected mime type")
+	cmd.Flags().StringVar(&mediaAs, "as", sendMediaTypeAuto, "force WhatsApp media type (auto|document|audio|image|video)")
 	cmd.Flags().StringVar(&replyTo, "reply-to", "", "message ID to quote/reply to")
 	cmd.Flags().StringVar(&replyToSender, "reply-to-sender", "", "sender JID of the quoted message (required for unsynced group replies)")
 	cmd.Flags().BoolVar(&ptt, "ptt", false, "send OGG/Opus audio as a WhatsApp voice note")

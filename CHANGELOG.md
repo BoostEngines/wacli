@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.15.0 - 2026-07-23
+
+### Highlights
+
+- Send files with an explicit WhatsApp media type, so an MP3 can be delivered as a downloadable document while retaining its audio MIME type. (thanks @DiegoDAF)
+- Webhooks now include the locally resolved chat name when it is available. (#312 - thanks @g1e2x87)
+
+### Added
+
+- Send: add `send file --as auto|document|audio|image|video` to choose the WhatsApp media type independently of MIME, including downloadable MP3 documents. (thanks @DiegoDAF)
+
+### Fixed
+
+- Sync: include locally resolved chat names in webhook payloads when available. (#312 - thanks @g1e2x87)
+
 ## 0.14.0 - 2026-07-19
 
 ### Highlights
