@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/openclaw/wacli/internal/fsutil"
+	"github.com/openclaw/wacli/internal/wa"
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"google.golang.org/protobuf/proto"
@@ -58,10 +59,120 @@ func TestReadSendFileDataRejectsOversizedFile(t *testing.T) {
 
 func TestSendFileCommandExposesReplyFlags(t *testing.T) {
 	cmd := newSendFileCmd(&rootFlags{})
-	for _, name := range []string{"reply-to", "reply-to-sender", "ptt"} {
+	for _, name := range []string{"reply-to", "reply-to-sender", "ptt", "as"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Fatalf("missing --%s flag", name)
 		}
+	}
+	as := cmd.Flags().Lookup("as")
+	if as.DefValue != sendMediaTypeAuto {
+		t.Fatalf("--as default = %q, want %q", as.DefValue, sendMediaTypeAuto)
+	}
+	if as.Usage != "force WhatsApp media type (auto|document|audio|image|video)" {
+		t.Fatalf("--as help = %q", as.Usage)
+	}
+}
+
+func TestResolveSendMediaType(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mime     string
+		override string
+		want     string
+		wantErr  bool
+	}{
+		{name: "mp3 defaults to audio bubble", mime: "audio/mpeg", override: "", want: "audio"},
+		{name: "mp3 forced to document", mime: "audio/mpeg", override: "document", want: "document"},
+		{name: "auto keeps mime detection", mime: "audio/mpeg", override: "auto", want: "audio"},
+		{name: "override is case-insensitive", mime: "audio/mpeg", override: "Document", want: "document"},
+		{name: "image detected from mime", mime: "image/png", override: "", want: "image"},
+		{name: "video detected from mime", mime: "video/mp4", override: "", want: "video"},
+		{name: "unknown mime falls back to document", mime: "application/octet-stream", override: "", want: "document"},
+		{name: "force audio for a document mime", mime: "application/octet-stream", override: "audio", want: "audio"},
+		{name: "invalid override rejected", mime: "audio/mpeg", override: "banana", wantErr: true},
+		{name: "sticker override rejected", mime: "image/webp", override: "sticker", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mediaType, uploadType, err := resolveSendMediaType(tc.mime, tc.override)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("resolveSendMediaType(%q, %q) = %q, want error", tc.mime, tc.override, mediaType)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveSendMediaType(%q, %q) unexpected error: %v", tc.mime, tc.override, err)
+			}
+			if mediaType != tc.want {
+				t.Fatalf("resolveSendMediaType(%q, %q) mediaType = %q, want %q", tc.mime, tc.override, mediaType, tc.want)
+			}
+			wantUpload, _ := wa.MediaTypeFromString(tc.want)
+			if uploadType != wantUpload {
+				t.Fatalf("resolveSendMediaType(%q, %q) uploadType = %v, want %v", tc.mime, tc.override, uploadType, wantUpload)
+			}
+		})
+	}
+}
+
+func TestValidateSendFileMediaOptions(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		override string
+		ptt      bool
+		want     string
+		wantErr  string
+	}{
+		{name: "default is auto", want: "auto"},
+		{name: "override is normalized", override: " Document ", want: "document"},
+		{name: "voice note allows auto", override: "auto", ptt: true, want: "auto"},
+		{name: "voice note allows audio", override: "audio", ptt: true, want: "audio"},
+		{name: "voice note rejects document", override: "document", ptt: true, wantErr: "--ptt may only"},
+		{name: "voice note rejects image", override: "image", ptt: true, wantErr: "--ptt may only"},
+		{name: "unknown override", override: "banana", wantErr: "invalid --as"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := validateSendFileMediaOptions(tc.override, tc.ptt)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("validateSendFileMediaOptions(%q, %t) error = %v, want %q", tc.override, tc.ptt, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("validateSendFileMediaOptions(%q, %t): %v", tc.override, tc.ptt, err)
+			}
+			if got != tc.want {
+				t.Fatalf("validateSendFileMediaOptions(%q, %t) = %q, want %q", tc.override, tc.ptt, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSendFileCommandValidatesMediaOptionsBeforeStore(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "unknown override", args: []string{"--as", "banana"}, want: "invalid --as"},
+		{name: "voice note conflict", args: []string{"--ptt", "--as", "document"}, want: "--ptt may only"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			storeDir := t.TempDir()
+			cmd := newSendFileCmd(&rootFlags{storeDir: storeDir})
+			cmd.SetArgs(append([]string{"--to", "15551234567", "--file", "missing.bin"}, tc.args...))
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("command error = %v, want %q", err, tc.want)
+			}
+			entries, err := os.ReadDir(storeDir)
+			if err != nil {
+				t.Fatalf("read store directory: %v", err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("invalid command opened store: %v", entries)
+			}
+		})
 	}
 }
 
