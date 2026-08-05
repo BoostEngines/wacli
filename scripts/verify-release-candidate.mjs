@@ -14,6 +14,7 @@ import {
   assertRuntimeVersion,
   parseCliArgs,
   releaseArchiveTarget,
+  releaseGoVersionForCommit,
   releaseManifestDigest,
   releaseAssetNames,
   runCommand,
@@ -70,6 +71,7 @@ export function verifyCandidateDirectory(options) {
   const releaseId = options.releaseId;
   const version = versionFromTag(tag);
   assertCommit(commit);
+  const expectedGoVersion = releaseGoVersionForCommit(commit, { run });
 
   const entries = fs.readdirSync(candidateDir, { withFileTypes: true });
   const nonFiles = entries.filter((entry) => !entry.isFile());
@@ -122,6 +124,7 @@ export function verifyCandidateDirectory(options) {
         assertGoBuildInfo(binary, version, {
           run,
           commit,
+          expectedGoVersion,
           expectedGoos: target.goos,
           expectedGoarch: target.goarch,
         });
@@ -144,12 +147,14 @@ export function verifyCandidateDirectory(options) {
     assertGoBuildInfo(universalAmd64, version, {
       run,
       commit,
+      expectedGoVersion,
       expectedGoos: "darwin",
       expectedGoarch: "amd64",
     });
     assertGoBuildInfo(universalArm64, version, {
       run,
       commit,
+      expectedGoVersion,
       expectedGoos: "darwin",
       expectedGoarch: "arm64",
     });

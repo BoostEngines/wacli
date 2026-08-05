@@ -29,6 +29,7 @@ wacli polls list [--chat RECIPIENT] [--limit N] [--json]
 - If a name matches multiple recipients, interactive terminals prompt.
 - In scripts, use `--pick N` to choose a displayed match.
 - Phone numbers may use common formatting such as `+1 (234) 567-8900`.
+- `send text` rejects the linked account's own phone-number or LID target. WhatsApp may acknowledge these self-DMs without delivering them to Message Yourself, so wacli returns an explicit error instead of `sent: true`.
 
 ## Replies and reactions
 
@@ -46,6 +47,7 @@ wacli polls list [--chat RECIPIENT] [--limit N] [--json]
 - Sent reactions are stored locally immediately, including reaction target and display text.
 - For group reactions, pass `--sender` for the original message sender.
 - Use `--post-send-wait 0` to disable the retry-receipt grace window for latency-sensitive scripts.
+- If any send command (text, file, voice, sticker, status, react, poll, poll vote, select, or message forward) delivers a message but recording it in local history fails (disk full, locked store), the command still succeeds with the delivered id and prints a warning to stderr; JSON output carries the failure in `store_warning`, including for sends delegated to a running `sync --follow` process. Do not retry such a send — the recipient already has the message.
 
 ## Polls
 

@@ -113,6 +113,9 @@ func newSendTextCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := validateTextRecipient(a.WA(), toJID); err != nil {
+				return err
+			}
 			mentionedJIDs, err := parseMentionedJIDs(mentions)
 			if err != nil {
 				return err
@@ -135,16 +138,17 @@ func newSendTextCmd(flags *rootFlags) *cobra.Command {
 
 			now := time.Now().UTC()
 			chat := toJID
-			persistOutboundText(ctx, a, chat, string(msgID), message, now)
+			storeErr := persistOutboundText(ctx, a, chat, string(msgID), message, now)
+			warnSendStoreFailure(os.Stderr, string(msgID), storeErr)
 
 			waitForPostSendRetryReceipts(ctx, postSendWait)
 
 			if flags.asJSON {
-				return out.WriteJSON(os.Stdout, map[string]any{
+				return out.WriteJSON(os.Stdout, addStoreWarning(map[string]any{
 					"sent": true,
 					"to":   chat.String(),
 					"id":   msgID,
-				})
+				}, storeErr))
 			}
 			fmt.Fprintf(os.Stdout, "Sent to %s (id %s)\n", chat.String(), msgID)
 			return nil
@@ -165,13 +169,26 @@ func newSendTextCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-func persistOutboundText(ctx context.Context, a *app.App, chat types.JID, msgID, text string, now time.Time) {
-	chatName := a.WA().ResolveChatName(ctx, chat, "")
-	if err := a.DB().UpsertChat(chat.String(), chatKindFromJID(chat), chatName, now); err != nil {
-		warnOutboundPersist("chat", msgID, err)
-		return
+func persistOutboundText(ctx context.Context, a *app.App, chat types.JID, msgID, text string, now time.Time) error {
+	return persistOutboundTextWith(ctx, a.DB(), a.WA(), chat, msgID, text, now)
+}
+
+type outboundTextResolver interface {
+	ResolveChatName(ctx context.Context, chat types.JID, pushName string) string
+	ResolveLIDToPN(ctx context.Context, jid types.JID) types.JID
+}
+
+func persistOutboundTextWith(ctx context.Context, db *store.DB, resolver outboundTextResolver, chat types.JID, msgID, text string, now time.Time) error {
+	chat = resolver.ResolveLIDToPN(ctx, chat)
+	if chat.Server == types.DefaultUserServer {
+		chat = chat.ToNonAD()
 	}
-	if err := a.DB().UpsertMessage(store.UpsertMessageParams{
+	chatName := resolver.ResolveChatName(ctx, chat, "")
+	var storeErr error
+	if err := db.UpsertChat(chat.String(), chatKindFromJID(chat), chatName, now); err != nil {
+		storeErr = fmt.Errorf("chat update: %w", err)
+	}
+	if err := db.UpsertMessage(store.UpsertMessageParams{
 		ChatJID:    chat.String(),
 		ChatName:   chatName,
 		MsgID:      msgID,
@@ -181,15 +198,9 @@ func persistOutboundText(ctx context.Context, a *app.App, chat types.JID, msgID,
 		FromMe:     true,
 		Text:       text,
 	}); err != nil {
-		warnOutboundPersist("message", msgID, err)
+		storeErr = errors.Join(storeErr, fmt.Errorf("message update: %w", err))
 	}
-}
-
-func warnOutboundPersist(kind, msgID string, err error) {
-	if err == nil {
-		return
-	}
-	fmt.Fprintf(os.Stderr, "warning: sent message %s was accepted by WhatsApp, but local outbound %s persistence failed: %v\n", msgID, kind, err)
+	return storeErr
 }
 
 type sendTextApp interface {
@@ -202,7 +213,9 @@ type textMessageSender interface {
 	SendProtoMessage(ctx context.Context, to types.JID, msg *waProto.Message) (types.MessageID, error)
 	GetGroupInfo(ctx context.Context, jid types.JID) (*types.GroupInfo, error)
 	ResolvePNToLID(ctx context.Context, jid types.JID) types.JID
+	ResolveLIDToPN(ctx context.Context, jid types.JID) types.JID
 	LinkedJID() string
+	LinkedLID() string
 }
 
 type textEphemeralOptions struct {
@@ -219,16 +232,25 @@ type resolvedTextEphemeral struct {
 
 const defaultEphemeralExpiration uint32 = 7 * 24 * 60 * 60
 
+var errSelfTextRecipient = errors.New("send text to the linked account itself is not supported: WhatsApp can acknowledge self-messages without delivering them; use the official Message Yourself chat")
+
 func sendTextMessage(ctx context.Context, a sendTextApp, to types.JID, text, replyTo, replyToSender string, preview *linkpreview.Preview, mentionedJIDs []string, ephemeral textEphemeralOptions) (types.MessageID, error) {
 	return sendTextMessageWithSender(ctx, a.WA(), a.DB(), to, text, replyTo, replyToSender, preview, mentionedJIDs, ephemeral)
 }
 
 func sendTextMessageWithSender(ctx context.Context, sender textMessageSender, db *store.DB, to types.JID, text, replyTo, replyToSender string, preview *linkpreview.Preview, mentionedJIDs []string, ephemeral textEphemeralOptions) (types.MessageID, error) {
-	selfJID, err := textReplySelfJID(ctx, sender, db, to, replyTo, replyToSender)
+	if err := validateTextRecipient(sender, to); err != nil {
+		return "", err
+	}
+	var aliasTo types.JID
+	if strings.TrimSpace(replyTo) != "" {
+		aliasTo = replyLookupAlias(ctx, sender, to)
+	}
+	selfJID, err := textReplySelfJID(ctx, sender, db, to, aliasTo, replyTo, replyToSender)
 	if err != nil {
 		return "", err
 	}
-	msg, plainText, err := buildTextMessageWithSelf(db, to, text, replyTo, replyToSender, selfJID, preview, mentionedJIDs)
+	msg, plainText, err := buildTextMessageWithSelf(db, to, aliasTo, text, replyTo, replyToSender, selfJID, preview, mentionedJIDs)
 	if err != nil {
 		return "", err
 	}
@@ -252,13 +274,37 @@ func sendTextMessageWithSender(ctx context.Context, sender textMessageSender, db
 	return sender.SendProtoMessage(ctx, to, msg)
 }
 
-func textReplySelfJID(ctx context.Context, sender textMessageSender, db *store.DB, chat types.JID, replyTo, replyToSender string) (string, error) {
+func validateTextRecipient(sender textMessageSender, to types.JID) error {
+	if isSelfTextRecipient(sender, to) {
+		return errSelfTextRecipient
+	}
+	return nil
+}
+
+func isSelfTextRecipient(sender textMessageSender, to types.JID) bool {
+	linked, err := types.ParseJID(strings.TrimSpace(sender.LinkedJID()))
+	if err != nil || linked.IsEmpty() {
+		return false
+	}
+	linked = linked.ToNonAD()
+	to = to.ToNonAD()
+	if to == linked {
+		return true
+	}
+	if to.Server != types.HiddenUserServer || linked.Server != types.DefaultUserServer {
+		return false
+	}
+	linkedLID, err := types.ParseJID(strings.TrimSpace(sender.LinkedLID()))
+	return err == nil && !linkedLID.IsEmpty() && linkedLID.ToNonAD() == to
+}
+
+func textReplySelfJID(ctx context.Context, sender textMessageSender, db *store.DB, chat, aliasChat types.JID, replyTo, replyToSender string) (string, error) {
 	linked := strings.TrimSpace(sender.LinkedJID())
 	replyTo = strings.TrimSpace(replyTo)
 	if replyTo == "" || strings.TrimSpace(replyToSender) != "" {
 		return linked, nil
 	}
-	quoted, err := db.GetMessage(chat.String(), replyTo)
+	quoted, err := getQuotedMessage(db, chat, aliasChat, replyTo)
 	if err != nil || !quoted.FromMe {
 		return linked, nil
 	}
@@ -420,11 +466,11 @@ func decodeMessageEscapes(s string) (string, error) {
 }
 
 func buildTextMessage(db *store.DB, to types.JID, text, replyTo, replyToSender string, preview *linkpreview.Preview, mentionedJIDs []string) (*waProto.Message, bool, error) {
-	return buildTextMessageWithSelf(db, to, text, replyTo, replyToSender, "", preview, mentionedJIDs)
+	return buildTextMessageWithSelf(db, to, types.EmptyJID, text, replyTo, replyToSender, "", preview, mentionedJIDs)
 }
 
-func buildTextMessageWithSelf(db *store.DB, to types.JID, text, replyTo, replyToSender, selfJID string, preview *linkpreview.Preview, mentionedJIDs []string) (*waProto.Message, bool, error) {
-	info, err := buildTextContextInfo(db, to, replyTo, replyToSender, selfJID, mentionedJIDs)
+func buildTextMessageWithSelf(db *store.DB, to, aliasTo types.JID, text, replyTo, replyToSender, selfJID string, preview *linkpreview.Preview, mentionedJIDs []string) (*waProto.Message, bool, error) {
+	info, err := buildTextContextInfo(db, to, aliasTo, replyTo, replyToSender, selfJID, mentionedJIDs)
 	if err != nil {
 		return nil, false, err
 	}
@@ -461,8 +507,27 @@ func attachLinkPreview(msg *waProto.ExtendedTextMessage, preview *linkpreview.Pr
 	msg.PreviewType = waProto.ExtendedTextMessage_NONE.Enum()
 }
 
-func buildTextContextInfo(db *store.DB, chat types.JID, replyTo, replyToSender, selfJID string, mentionedJIDs []string) (*waProto.ContextInfo, error) {
-	info, err := buildTextReplyContextInfo(db, chat, replyTo, replyToSender, selfJID)
+func getQuotedMessage(db *store.DB, chat, aliasChat types.JID, replyTo string) (store.Message, error) {
+	quoted, err := db.GetMessage(chat.String(), replyTo)
+	if !errors.Is(err, sql.ErrNoRows) || aliasChat.IsEmpty() || aliasChat.String() == chat.String() {
+		return quoted, err
+	}
+	return db.GetMessage(aliasChat.String(), replyTo)
+}
+
+func replyLookupAlias(ctx context.Context, sender textMessageSender, to types.JID) types.JID {
+	switch to.Server {
+	case types.DefaultUserServer:
+		return sender.ResolvePNToLID(ctx, to).ToNonAD()
+	case types.HiddenUserServer:
+		return sender.ResolveLIDToPN(ctx, to).ToNonAD()
+	default:
+		return types.EmptyJID
+	}
+}
+
+func buildTextContextInfo(db *store.DB, chat, aliasChat types.JID, replyTo, replyToSender, selfJID string, mentionedJIDs []string) (*waProto.ContextInfo, error) {
+	info, err := buildTextReplyContextInfo(db, chat, aliasChat, replyTo, replyToSender, selfJID)
 	if err != nil {
 		return nil, err
 	}
@@ -476,13 +541,13 @@ func buildTextContextInfo(db *store.DB, chat types.JID, replyTo, replyToSender, 
 	return info, nil
 }
 
-func buildTextReplyContextInfo(db *store.DB, chat types.JID, replyTo, replyToSender, selfJID string) (*waProto.ContextInfo, error) {
+func buildTextReplyContextInfo(db *store.DB, chat, aliasChat types.JID, replyTo, replyToSender, selfJID string) (*waProto.ContextInfo, error) {
 	replyTo = strings.TrimSpace(replyTo)
 	if replyTo == "" {
 		return nil, nil
 	}
 
-	quoted, err := db.GetMessage(chat.String(), replyTo)
+	quoted, err := getQuotedMessage(db, chat, aliasChat, replyTo)
 	if errors.Is(err, sql.ErrNoRows) {
 		if chat.Server == types.GroupServer && strings.TrimSpace(replyToSender) != "" {
 			participant, participantErr := resolveTextReplyParticipant(chat, store.Message{}, replyToSender, selfJID)
