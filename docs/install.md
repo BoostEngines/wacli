@@ -27,7 +27,7 @@ Download the matching archive from the [latest release](https://github.com/openc
 
 ## Build from source
 
-`wacli` requires Go 1.25.12 or newer and uses `go-sqlite3`, so source builds require cgo and a C toolchain:
+`wacli` requires Go 1.26.5 or newer and uses `go-sqlite3`, so source builds require cgo and a C toolchain:
 
 - macOS: Xcode Command Line Tools.
 - Debian / Ubuntu: `sudo apt install build-essential`.
@@ -45,8 +45,8 @@ For local development:
 ```bash
 git clone https://github.com/openclaw/wacli.git
 cd wacli
-CGO_ENABLED=1 CGO_CFLAGS="-Wno-error=missing-braces" \
-  go build -tags sqlite_fts5 -o ./dist/wacli ./cmd/wacli
+make build
+make check
 ./dist/wacli --version
 ```
 
@@ -54,7 +54,8 @@ The `sqlite_fts5` build tag is required for `messages search` to use the FTS5 in
 
 GCC 15 has stricter brace-init warnings; the `-Wno-error=missing-braces` flag keeps the `go-sqlite3` build green there. macOS / clang and older GCC do not need it.
 
-If you have `pnpm` installed, `pnpm build` runs the same command and writes `./dist/wacli`.
+The Makefile is a thin wrapper over the existing pnpm scripts. `make build`
+writes `./dist/wacli`; `make check` runs the complete local CI gate.
 
 ## Verify the install
 
@@ -70,7 +71,7 @@ wacli --help
 
 - **Homebrew tap**: `brew upgrade wacli` (or `brew reinstall openclaw/tap/wacli`).
 - **GitHub release archives**: download the new tarball / ZIP and replace the binary.
-- **Source builds**: `git pull && pnpm build` (or the manual `go build` above). Local builds use the version compiled into the source tree; release artifacts inject the tag during GoReleaser builds.
+- **Source builds**: `git pull && make build` (or `pnpm build`). Local builds use the version compiled into the source tree; release artifacts inject the tag during GoReleaser builds.
 
 The local store format is forward-compatible across point releases; routine upgrades do not require re-pairing.
 

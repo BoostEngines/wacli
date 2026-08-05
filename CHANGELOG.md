@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.15.2 - 2026-08-02
+
+### Added
+
+- Contacts: add `contacts check <phone> [phone...]` to query live whether numbers are registered on WhatsApp, with JSON output for scripting; per-number `responded` distinguishes a server non-answer from a confirmed "not registered". (#331)
+
+### Fixed
+
+- Send: surface local history failures after a delivered file, voice, or status send as a `store_warning` (stderr warning plus JSON field) instead of silently diverging local history, while keeping the delivered message id so scripts do not retry an already-sent message. (#328 - thanks @SebTardif)
+- Send: extend the `store_warning` partial-success contract to every remaining send surface — text, sticker, reactions, polls, poll votes, button/list selections, and message forwarding — including sends delegated to a running `sync --follow` process.
+
+### Docs
+
+- README: align the project overview, install paths, quickstart, and command map with the shared documentation standard.
+
+## 0.15.1 - 2026-08-01
+
+### Added
+
+- Sync: add opt-in `--send-spacing` fixed or randomized pacing for sends delegated to a running follow process. (#318 - thanks @cohnen)
+- Sync: add opt-in receipt and chat-presence webhook events while keeping legacy message payloads unchanged. (#315 - thanks @Jaime-data)
+
+### Fixed
+
+- Sync: stop promptly when WhatsApp revokes the linked session, including while a reconnect is already in progress, and print the re-authentication steps. (#325 - thanks @cohnen)
+- Send: keep self-chat storage under the canonical phone-number chat and reject text sends to the linked account itself instead of reporting an acknowledgement that may never reach Message Yourself. (#319 - thanks @Lucas-Kim-J)
+- Send: resolve quoted direct messages across phone-number and LID chat aliases so replies can find migrated history. (#326 - thanks @0xlucuma)
+
+### Chore
+
+- Dependencies: update `whatsmeow`, terminal support, GraphQL parsing, and supporting Go modules.
+- Tooling: update the pinned pnpm version from 10.34.4 to 11.18.0.
+- Build: migrate `sqlc` code generator to Go 1.24+ `go tool` directive and bump project toolchain requirement to Go 1.26.5. (#313 - thanks @thedavidweng)
+- Build: standardize the Makefile's build, check, snapshot, and verified local-release targets across the crawler repositories.
+- Release: publish v0.15.0 under a one-time clean-VM Gatekeeper waiver, with retroactive VM proof still required when hardware returns, and verify preserved drafts against their release commit's Go toolchain.
+
 ## 0.15.0 - 2026-07-23
 
 ### Highlights

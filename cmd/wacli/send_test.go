@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -44,6 +45,7 @@ type recordingTextSender struct {
 	linkedJID       string
 	linkedLID       types.JID
 	resolveLIDCalls int
+	lidToPN         types.JID
 }
 
 func (s *recordingTextSender) SendText(_ context.Context, to types.JID, text string) (types.MessageID, error) {
@@ -75,9 +77,36 @@ func (s *recordingTextSender) LinkedJID() string {
 	return s.linkedJID
 }
 
+func (s *recordingTextSender) LinkedLID() string {
+	return s.linkedLID.String()
+}
+
 func (s *recordingTextSender) ResolvePNToLID(_ context.Context, _ types.JID) types.JID {
 	s.resolveLIDCalls++
 	return s.linkedLID
+}
+
+func (s *recordingTextSender) ResolveLIDToPN(_ context.Context, jid types.JID) types.JID {
+	if !s.lidToPN.IsEmpty() {
+		return s.lidToPN
+	}
+	return jid
+}
+
+type outboundTextResolverStub struct {
+	lid types.JID
+	pn  types.JID
+}
+
+func (r outboundTextResolverStub) ResolveChatName(_ context.Context, chat types.JID, _ string) string {
+	return chat.String()
+}
+
+func (r outboundTextResolverStub) ResolveLIDToPN(_ context.Context, jid types.JID) types.JID {
+	if jid.ToNonAD() == r.lid {
+		return r.pn
+	}
+	return jid
 }
 
 func requireExtendedText(t *testing.T, msg *waProto.Message) *waProto.ExtendedTextMessage {
@@ -101,6 +130,88 @@ func TestResolveRecipientFallsBackToFormattedPhone(t *testing.T) {
 	}
 	if got.String() != "15551234567@s.whatsapp.net" {
 		t.Fatalf("recipient = %q", got.String())
+	}
+}
+
+func TestSendTextToOwnPNRejectsRegisteredLID(t *testing.T) {
+	pn := types.NewJID("15551234567", types.DefaultUserServer)
+	lid := types.NewJID("999123456789", types.HiddenUserServer)
+	warmup := &mockUserInfoClient{
+		isOnWhatsApp: func(_ context.Context, phones []string) ([]types.IsOnWhatsAppResponse, error) {
+			if len(phones) != 1 || phones[0] != "+15551234567" {
+				t.Fatalf("registration lookup = %v", phones)
+			}
+			return []types.IsOnWhatsAppResponse{{JID: lid, PhoneNumber: pn, IsIn: true}}, nil
+		},
+		getUserInfo: func(_ context.Context, jids []types.JID) (map[types.JID]types.UserInfo, error) {
+			if len(jids) != 1 || jids[0] != lid {
+				t.Fatalf("user info target = %v, want %s", jids, lid)
+			}
+			return nil, nil
+		},
+	}
+
+	var stderr bytes.Buffer
+	target := warmupRecipient(context.Background(), warmup, pn, &stderr)
+	sender := &recordingTextSender{linkedJID: pn.String(), linkedLID: lid}
+	_, err := sendTextMessageWithSender(context.Background(), sender, openSendTestDB(t), target, "self-test", "", "", nil, nil, textEphemeralOptions{})
+	if err == nil || !strings.Contains(err.Error(), "linked account itself is not supported") {
+		t.Fatalf("sendTextMessageWithSender error = %v, want self-send rejection", err)
+	}
+	if sender.textCalls != 0 || sender.protoCalls != 0 {
+		t.Fatalf("self-send reached protocol sender: text=%d proto=%d", sender.textCalls, sender.protoCalls)
+	}
+	if sender.resolveLIDCalls != 0 {
+		t.Fatalf("ResolvePNToLID calls = %d, want 0", sender.resolveLIDCalls)
+	}
+}
+
+func TestSendTextToOwnPNRejectsWithoutRegistrationCanonicalization(t *testing.T) {
+	pn := types.NewJID("15551234567", types.DefaultUserServer)
+	sender := &recordingTextSender{linkedJID: pn.String()}
+
+	_, err := sendTextMessageWithSender(context.Background(), sender, openSendTestDB(t), pn, "self-test", "", "", nil, nil, textEphemeralOptions{})
+	if err == nil || !strings.Contains(err.Error(), "linked account itself is not supported") {
+		t.Fatalf("sendTextMessageWithSender error = %v, want self-send rejection", err)
+	}
+	if sender.textCalls != 0 || sender.protoCalls != 0 || sender.resolveLIDCalls != 0 {
+		t.Fatalf("self-send reached protocol path: text=%d proto=%d resolve=%d", sender.textCalls, sender.protoCalls, sender.resolveLIDCalls)
+	}
+}
+
+func TestPersistOutboundTextCanonicalizesSelfLIDToPN(t *testing.T) {
+	db := openSendTestDB(t)
+	pn := types.NewJID("15551234567", types.DefaultUserServer)
+	lid := types.NewJID("999123456789", types.HiddenUserServer)
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+
+	if err := db.UpsertChat(pn.String(), "dm", "Message Yourself", now.Add(-time.Minute)); err != nil {
+		t.Fatalf("UpsertChat inbound: %v", err)
+	}
+	if err := db.UpsertMessage(store.UpsertMessageParams{
+		ChatJID:   pn.String(),
+		MsgID:     "inbound-id",
+		Timestamp: now.Add(-time.Minute),
+		Text:      "from phone",
+	}); err != nil {
+		t.Fatalf("UpsertMessage inbound: %v", err)
+	}
+
+	persistOutboundTextWith(context.Background(), db, outboundTextResolverStub{lid: lid, pn: pn}, lid, "outbound-id", "self-test", now)
+
+	stored, err := db.GetMessage(pn.String(), "outbound-id")
+	if err != nil {
+		t.Fatalf("GetMessage PN outbound: %v", err)
+	}
+	if stored.ChatJID != pn.String() || !stored.FromMe || stored.Text != "self-test" {
+		t.Fatalf("stored outbound = %+v", stored)
+	}
+	chats, err := db.ListChats("", 10)
+	if err != nil {
+		t.Fatalf("ListChats: %v", err)
+	}
+	if len(chats) != 1 || chats[0].JID != pn.String() {
+		t.Fatalf("chats = %+v, want only canonical PN %s", chats, pn)
 	}
 }
 
@@ -362,7 +473,7 @@ func TestBuildTextReplyContextInfo(t *testing.T) {
 				t.Fatalf("UpsertMessage: %v", err)
 			}
 
-			got, err := buildTextReplyContextInfo(db, tc.chat, "quoted", "", self)
+			got, err := buildTextReplyContextInfo(db, tc.chat, types.EmptyJID, "quoted", "", self)
 			if err != nil {
 				t.Fatalf("buildTextReplyContextInfo: %v", err)
 			}
@@ -1021,5 +1132,97 @@ func TestBuildTextMessageAttachesLinkPreview(t *testing.T) {
 	}
 	if string(ext.GetJPEGThumbnail()) != "jpeg" {
 		t.Fatalf("thumbnail = %q", string(ext.GetJPEGThumbnail()))
+	}
+}
+
+func TestBuildTextReplyContextInfoFindsQuoteUnderChatAlias(t *testing.T) {
+	pn := types.NewJID("51918505715", types.DefaultUserServer)
+	lid := types.NewJID("46922702278894", types.HiddenUserServer)
+
+	tests := []struct {
+		name      string
+		storedIn  types.JID
+		addressed types.JID
+	}{
+		{name: "history under phone JID, addressed by LID", storedIn: pn, addressed: lid},
+		{name: "history under LID, addressed by phone JID", storedIn: lid, addressed: pn},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openSendTestDB(t)
+			if err := db.UpsertChat(tc.storedIn.String(), "chat", "alias chat", time.Now()); err != nil {
+				t.Fatalf("UpsertChat: %v", err)
+			}
+			if err := db.UpsertMessage(store.UpsertMessageParams{
+				ChatJID:   tc.storedIn.String(),
+				MsgID:     "quoted",
+				SenderJID: tc.storedIn.String(),
+				Timestamp: time.Now(),
+				Text:      "original",
+			}); err != nil {
+				t.Fatalf("UpsertMessage: %v", err)
+			}
+
+			if _, err := buildTextReplyContextInfo(db, tc.addressed, types.EmptyJID, "quoted", "", ""); err == nil {
+				t.Fatal("expected the un-aliased lookup to fail")
+			}
+
+			got, err := buildTextReplyContextInfo(db, tc.addressed, tc.storedIn, "quoted", "", "")
+			if err != nil {
+				t.Fatalf("alias lookup should resolve the quote: %v", err)
+			}
+			if got == nil || got.GetStanzaID() != "quoted" {
+				t.Fatalf("context info = %+v, want StanzaID=quoted", got)
+			}
+			if got.GetParticipant() != tc.storedIn.String() {
+				t.Fatalf("participant = %q, want %q", got.GetParticipant(), tc.storedIn.String())
+			}
+		})
+	}
+}
+
+func TestSendTextReplyToOwnMessageUnderChatAliasUsesLIDParticipant(t *testing.T) {
+	db := openSendTestDB(t)
+	pn := types.NewJID("51918505715", types.DefaultUserServer)
+	lid := types.NewJID("46922702278894", types.HiddenUserServer)
+	linkedPN := types.NewJID("15550000000", types.DefaultUserServer)
+	linkedLID := types.NewJID("99887766554433", types.HiddenUserServer)
+
+	if err := db.UpsertChat(pn.String(), "dm", "Alice", time.Now()); err != nil {
+		t.Fatalf("UpsertChat: %v", err)
+	}
+	if err := db.UpsertMessage(store.UpsertMessageParams{
+		ChatJID:   pn.String(),
+		MsgID:     "quoted",
+		Timestamp: time.Now(),
+		FromMe:    true,
+		Text:      "my earlier message",
+	}); err != nil {
+		t.Fatalf("UpsertMessage: %v", err)
+	}
+
+	sender := &recordingTextSender{
+		linkedJID: linkedPN.String(),
+		linkedLID: linkedLID,
+		lidToPN:   pn,
+	}
+
+	if _, err := sendTextMessageWithSender(context.Background(), sender, db, lid, "reply", "quoted", "", nil, nil, textEphemeralOptions{}); err != nil {
+		t.Fatalf("sendTextMessageWithSender: %v", err)
+	}
+
+	if sender.protoMsg == nil {
+		t.Fatal("no proto message sent")
+	}
+	ctxInfo := sender.protoMsg.GetExtendedTextMessage().GetContextInfo()
+	if ctxInfo == nil {
+		t.Fatal("no context info on the sent message")
+	}
+	if ctxInfo.GetStanzaID() != "quoted" {
+		t.Fatalf("stanza ID = %q, want quoted", ctxInfo.GetStanzaID())
+	}
+	if ctxInfo.GetParticipant() != linkedLID.String() {
+		t.Fatalf("participant = %q, want the linked LID %q", ctxInfo.GetParticipant(), linkedLID.String())
 	}
 }
