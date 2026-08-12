@@ -542,6 +542,20 @@ func (a *App) storeParsedMessage(ctx context.Context, pm wa.ParsedMessage) error
 	}); err != nil {
 		return err
 	}
+	a.warnUnhandledPayload(pm)
+	if pm.Location != nil {
+		if err := a.db.UpsertMessageLocation(store.MessageLocation{
+			ChatJID:   chatJID,
+			MsgID:     pm.ID,
+			Latitude:  pm.Location.Latitude,
+			Longitude: pm.Location.Longitude,
+			Name:      pm.Location.Name,
+			Address:   pm.Location.Address,
+			IsLive:    pm.Location.IsLive,
+		}); err != nil {
+			return err
+		}
+	}
 	if pm.Call != nil {
 		pm.Call.Chat = pm.Chat
 		if pm.Call.SenderJID == "" {
@@ -701,6 +715,32 @@ func (a *App) buildDisplayText(ctx context.Context, pm wa.ParsedMessage) string 
 	return base
 }
 
+// warnUnhandledPayload surfaces messages whose payload produced no content, so
+// the resulting "(message)" placeholder is diagnosable. Without it the row is
+// indistinguishable from a message that genuinely carried nothing, and any
+// consumer reading local history silently sees a gap it cannot account for.
+//
+// Called only after the message upsert succeeds: the warning states that the
+// row was stored, so emitting it earlier would report a write that may still
+// fail.
+func (a *App) warnUnhandledPayload(pm wa.ParsedMessage) {
+	if pm.UnhandledPayload == "" {
+		return
+	}
+	a.emitWarning(
+		"unhandled_message_payload",
+		fmt.Sprintf(
+			"stored message %s in %s without content: unhandled payload %s",
+			pm.ID, canonicalJIDString(pm.Chat), pm.UnhandledPayload,
+		),
+		map[string]any{
+			"chat_jid": canonicalJIDString(pm.Chat),
+			"msg_id":   pm.ID,
+			"payload":  pm.UnhandledPayload,
+		},
+	)
+}
+
 func baseDisplayText(pm wa.ParsedMessage) string {
 	if pm.Call != nil {
 		return callDisplayText(*pm.Call)
@@ -783,6 +823,8 @@ func mediaLabel(mediaType string) string {
 		return "document"
 	case "location":
 		return "location"
+	case "live_location":
+		return "live location"
 	case "contact":
 		return "contact"
 	case "contacts":
