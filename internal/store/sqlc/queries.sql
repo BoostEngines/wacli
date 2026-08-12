@@ -6,6 +6,13 @@ ON CONFLICT(jid) DO UPDATE SET
     name=CASE WHEN excluded.name IS NOT NULL AND excluded.name != '' THEN excluded.name ELSE chats.name END,
     last_message_ts=CASE WHEN excluded.last_message_ts > COALESCE(chats.last_message_ts, 0) THEN excluded.last_message_ts ELSE chats.last_message_ts END;
 
+-- name: UpsertChatMetadata :exec
+INSERT INTO chats(jid, kind, name)
+VALUES(?, ?, ?)
+ON CONFLICT(jid) DO UPDATE SET
+    kind=excluded.kind,
+    name=CASE WHEN excluded.name IS NOT NULL AND excluded.name != '' THEN excluded.name ELSE chats.name END;
+
 -- name: GetChat :one
 SELECT jid, kind, COALESCE(name,''), COALESCE(last_message_ts,0), COALESCE(archived,0), COALESCE(pinned,0), COALESCE(muted_until,0), COALESCE(unread,0), COALESCE(unread_count,0)
 FROM chats
@@ -469,3 +476,27 @@ DELETE FROM poll_votes WHERE chat_jid = ? AND poll_msg_id = ?;
 
 -- name: DeletePoll :exec
 DELETE FROM polls WHERE chat_jid = ? AND msg_id = ?;
+
+-- name: UpsertMessageLocation :exec
+INSERT INTO message_locations (chat_jid, msg_id, latitude, longitude, name, address, is_live)
+SELECT ?, ?, ?, ?, ?, ?, ?
+WHERE NOT EXISTS (
+    SELECT 1 FROM message_payload_purges p WHERE p.chat_jid = ? AND p.msg_id = ?
+)
+ON CONFLICT(chat_jid, msg_id) DO UPDATE SET
+    latitude = excluded.latitude,
+    longitude = excluded.longitude,
+    name = excluded.name,
+    address = excluded.address,
+    is_live = excluded.is_live;
+
+-- name: GetMessageLocation :one
+SELECT chat_jid, msg_id, latitude, longitude, COALESCE(name,''), COALESCE(address,''), is_live
+FROM message_locations
+WHERE chat_jid = ? AND msg_id = ?;
+
+-- name: DeleteMessageLocation :exec
+DELETE FROM message_locations WHERE chat_jid = ? AND msg_id = ?;
+
+-- name: DeleteMessageLocationsForChat :exec
+DELETE FROM message_locations WHERE chat_jid = ?;

@@ -30,6 +30,17 @@ func (d *DB) UpsertChat(jid, kind, name string, lastTS time.Time) error {
 	})
 }
 
+func (d *DB) UpsertChatMetadata(jid, kind, name string) error {
+	if strings.TrimSpace(kind) == "" {
+		kind = "unknown"
+	}
+	return d.q.UpsertChatMetadata(storeCtx(), storedb.UpsertChatMetadataParams{
+		Jid:  jid,
+		Kind: kind,
+		Name: nullString(name),
+	})
+}
+
 func (d *DB) ListChats(query string, limit int) ([]Chat, error) {
 	return d.ListChatsFiltered(ChatListFilter{Query: query, Limit: limit})
 }
@@ -188,6 +199,9 @@ func (d *DB) DeleteChat(jid string) error {
 	if err := q.DeletePollsForChat(ctx, jid); err != nil {
 		return err
 	}
+	if err := q.DeleteMessageLocationsForChat(ctx, jid); err != nil {
+		return err
+	}
 	if err := q.DeleteStarredForChat(ctx, jid); err != nil {
 		return err
 	}
@@ -238,6 +252,9 @@ func (d *DB) DeleteChatsOlderThan(days int) (int64, error) {
 		return 0, err
 	}
 	if _, err := tx.Exec(`DELETE FROM starred WHERE chat_jid IN (`+staleChatJIDsSQL+`)`, cutoffUnix); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(`DELETE FROM message_locations WHERE chat_jid IN (`+staleChatJIDsSQL+`)`, cutoffUnix); err != nil {
 		return 0, err
 	}
 	res, err := tx.Exec(`DELETE FROM chats WHERE jid IN (`+staleChatJIDsSQL+`)`, cutoffUnix)
