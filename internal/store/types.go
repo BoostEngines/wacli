@@ -95,6 +95,7 @@ type Message struct {
 	DownloadedAt    time.Time
 	Starred         bool
 	StarredAt       time.Time
+	Edited          bool
 	Revoked         bool
 	DeletedForMe    bool
 	DeletedAt       *time.Time `json:"deleted_at,omitempty"`
