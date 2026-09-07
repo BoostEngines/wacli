@@ -4,6 +4,8 @@ Read when: running continuous capture, one-shot sync, contact/group refresh, or 
 
 `wacli sync` requires an existing authenticated store and never displays a QR code. It captures WhatsApp Web events into the local SQLite store.
 
+Startup repairs historical LID identities using indexed message lookups without rebuilding unchanged search content. Interrupting startup stops identity repair between individual identities; the next run resumes any remaining repairs.
+
 ## Command
 
 ```bash
