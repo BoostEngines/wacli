@@ -4,6 +4,8 @@ Read when: running continuous capture, one-shot sync, contact/group refresh, or 
 
 `wacli sync` requires an existing authenticated store and never displays a QR code. It captures WhatsApp Web events into the local SQLite store.
 
+Startup repairs historical LID identities using indexed message lookups without rebuilding unchanged search content. Interrupting startup stops identity repair between individual identities; the next run resumes any remaining repairs.
+
 ## Command
 
 ```bash
@@ -22,11 +24,11 @@ wacli sync [--once] [--follow] [--idle-exit 30s] [--max-reconnect 5m] [--stale-t
 - `--download-media` runs a bounded media downloader for sync events. Clean one-shot and bootstrap runs finish queued downloads before exiting; cancellation, errors, and storage-limit exits stop immediately.
 - `--send-spacing DURATION|MIN-MAX` paces serialized sends delegated to a running follow process. A single duration such as `2s` sets a fixed minimum gap; a range such as `500ms-5s` chooses a fresh random gap for each send. It is disabled by default, so unset behavior remains unchanged. The caller's command timeout includes time queued behind earlier sends, pacing, and the send itself; a request that runs out of time is not dispatched.
 - `--refresh-contacts` imports contacts from the session store.
-- `--refresh-groups` fetches joined groups live and updates the local DB.
+- `--refresh-groups` fetches joined groups live and updates local group metadata and participant snapshots.
 - `--refresh-channels` fetches subscribed WhatsApp Channels live and updates local chat rows.
 - `--webhook URL` posts successfully stored live message events as JSON on a bounded background worker. The payload includes `ChatName` when a locally resolved chat name is available.
 - `--webhook-secret SECRET` signs webhook payloads with `X-Wacli-Signature: sha256=<hmac>`.
-- `--webhook-events LIST` selects which event types are posted, as a comma-separated list of `message`, `receipt`, and `chat_presence`. The default is `message`, which posts exactly what earlier versions posted. A list that omits `message` stops message posts, so `--webhook-events receipt` posts receipts only. `chat_presence` needs `--presence-mode normal` (the default): WhatsApp only sends typing notifications to devices that mark themselves available. See [Webhook payloads](#webhook-payloads).
+- `--webhook-events LIST` selects which event types are posted, as a comma-separated list of `message`, `receipt`, and `chat_presence`. The default is `message`, which preserves the earlier message event shape. A list that omits `message` stops message posts, so `--webhook-events receipt` posts receipts only. `chat_presence` needs `--presence-mode normal` (the default): WhatsApp only sends typing notifications to devices that mark themselves available. See [Webhook payloads](#webhook-payloads).
 - Webhook delivery is best-effort: failures, request timeouts, and full-queue drops are logged as warnings and do not stop sync. Retries/backoff are intentionally out of scope for this flag.
 - If neither storage cap is configured, sync prints one warning because WhatsApp history can grow the local database substantially.
 - `WACLI_SYNC_MAX_MESSAGES` and `WACLI_SYNC_MAX_DB_SIZE` apply the same caps to `auth` bootstrap sync and `sync`.
@@ -43,15 +45,20 @@ wacli sync [--once] [--follow] [--idle-exit 30s] [--max-reconnect 5m] [--stale-t
 - A `stale` NDJSON event is emitted when the threshold is exceeded, containing `threshold`, `idle_duration`, `error_count`, and `source` fields.
 - While `sync --follow` is running, a `HEARTBEAT` file is written to the store directory (at most once per minute) with the last observed follow activity timestamp in RFC 3339 format. External watchdogs or `wacli doctor` can read this as an activity marker; quiet healthy sessions may not update it because successful keepalives are silent, and keepalive health is reported separately through `stale` events.
 - `--events` emits one NDJSON lifecycle event per stderr line for machine consumers. Routine human progress/status lines, interrupt prompts, and command errors are emitted as events while events are enabled.
+- `offline_sync_preview` reports the server's announced reconnect backlog with `total`, `messages`, `receipts`, `notifications`, and `app_data_changes`; `offline_sync_completed` reports the server's final `count`. Without `--events`, both print as status lines. Completion can arrive without a preview, including when there is no backlog.
+- These are server replay signals on stderr. Webhooks use a separate background queue, so completion does not mean queued HTTP deliveries have finished. Storage failures or webhook drops can also make delivery counts differ from the announced counts. Do not use these signals to classify individual webhook messages as replayed or live. Webhook payloads keep their existing shape.
 
 ## Webhook payloads
 
 Webhook payloads remain flat JSON objects. Receipt and chat-presence payloads carry
 an `EventType` discriminator. Message payloads deliberately omit it so existing
-consumers receive the same signed body as before; a missing `EventType` means
-`message`.
+consumers retain the established object shape; a missing `EventType` means
+`message`. Every JID field uses the same identity namespace as the local store:
+known LIDs are resolved to phone JIDs, while unknown LIDs remain unchanged. Every
+`Timestamp` is UTC (RFC 3339, `Z`), independent of the host's zone, matching the
+store and the CLI's JSON output.
 
-Messages use the stored live message payload documented above, unchanged:
+Messages use the stored live message payload documented above:
 
 ```json
 {"Chat":"15551234567@s.whatsapp.net","ID":"3EB0…","SenderJID":"15551234567@s.whatsapp.net","Timestamp":"2026-07-25T10:00:00Z","FromMe":false,"Text":"hi","ChatName":"Alice"}
