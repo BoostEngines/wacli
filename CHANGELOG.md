@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Sync: keep content-free system events out of chat activity order and rebuild matching existing activity timestamps from stored content. Thanks @zarmat99 (#436).
+
 ## 0.18.3 - 2026-09-21
 
 **Highlights:** webhooks omit media keys, backfill follows verified phone/LID identities, and sync recovery survives interruptions.
