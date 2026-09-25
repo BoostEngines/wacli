@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+## 0.19.0 - 2026-09-24
+
+**Highlights:** opt-in read receipts without app-state recovery, accurate unread counts, and stable chat activity order.
+
+- Chats: add opt-in `mark-read --receipts` through an independent network path, with bounded batches, safe unread boundaries, sync delegation, and privacy-aware outcome reporting. Thanks @zarmat99 and @Adi-A (#432, #433).
+- Sync: preserve messages beyond replayed read boundaries, keep read counts monotonic, resolve same-second boundaries by message ID, and exclude system events, reactions, and revocations from new unread counts. Thanks @zarmat99 (#435).
+- Sync: keep content-free system events out of chat activity order and rebuild matching existing activity timestamps from stored content. Thanks @zarmat99 (#436).
+
+## 0.18.3 - 2026-09-21
+
+**Highlights:** webhooks omit media keys, backfill follows verified phone/LID identities, and sync recovery survives interruptions.
+
+- Security: omit attachment decryption keys and retrieval fields from media webhooks while preserving descriptive metadata and local downloads. (#417 - thanks @hchittanuru3)
+- History and contacts: resolve verified phone/LID pairs for backfill requests and contact lookup, preserve alias/tag edits through either identity, and keep opaque LIDs out of phone fields. (#427 - thanks @ugoi)
+- History: wait for response persistence before checking backfill progress, preventing an asynchronous reply from stopping a multi-batch backfill early.
+- Sync: decrypt encrypted message edits in live/history sync and bind updates to the authenticated sender, chat, and target. (#362, #363 - thanks @goutamadwant)
+- Sync: repair LTHash mismatches with a durable full refresh before bounded phone recovery, and replay interrupted recovery at startup. (#367, #382 - thanks @shishiv)
+- Messages: index associated-child and group-status-mention content and group-invite captions during live/history sync. (#365 - thanks @natea)
+- Auth: retain observed session revocation in auth/doctor diagnostics until confirmed login, and wait for login confirmation before reporting a successful diagnostic connection. (#389 - thanks @0xble)
+- CLI: keep libsignal diagnostics off stdout, preserve warnings and errors safely on stderr, and emit them as NDJSON warnings with `--events` without exposing raw cryptographic payloads. (#418, #419 - thanks @shishiv)
+- Store: return failure when bulk chat/group cleanup cannot delete selected rows, preserving successful deletions and reporting the underlying errors instead of emitting a successful JSON result.
+- Session: close the WhatsApp SQLite container on permanent shutdown and initialization failure, while keeping temporary reconnects usable and draining pending app-state persistence before closing either database.
+- Dependencies: refresh WhatsApp protocol handling, Go modules, pnpm, GoReleaser, and Docker images; keep the Go and Node source requirements unchanged.
+- Builds: share production/test dead-code checks between local and CI gates, validate documentation links in CI, isolate concurrent Windows lock cross-builds, and allow Go module maintenance while keeping CGO-disabled builds rejected.
+
+## 0.18.2 - 2026-09-11
+
+**Highlights:** mark chats read or unread while continuous sync owns the store.
+
+- Chats: delegate `mark-read` and `mark-unread` through the same-store follow process, preserving read-only checks and command output; restart older daemons after upgrading. (#361, #380 - thanks @shishiv)
+- Dependencies: refresh whatsmeow, Go networking and database tooling, vulnerability and dead-code checkers, GoReleaser 2.18.1, and pnpm 12.4.0 while retaining the 48-hour package release-age window.
+- Builds: identify source builds as the upcoming 0.18.2 patch.
+
 ## 0.18.1 - 2026-09-07
 
 **Highlights:** bounded memory use when generating waveforms for long voice notes.

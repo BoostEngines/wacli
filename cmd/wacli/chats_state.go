@@ -14,8 +14,9 @@ import (
 )
 
 type chatStateOptions struct {
-	chat string
-	pick int
+	chat     string
+	pick     int
+	receipts bool
 }
 
 func newChatsArchiveCmd(flags *rootFlags, archive bool) *cobra.Command {
@@ -28,7 +29,7 @@ func newChatsArchiveCmd(flags *rootFlags, archive bool) *cobra.Command {
 		Use:   use,
 		Short: short,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runChatState(flags, opts, use, func(ctx context.Context, a chatStateApp, jid types.JID) error {
+			return runChatState(flags, opts, use, nil, func(ctx context.Context, a chatStateApp, jid types.JID) error {
 				return a.ArchiveChat(ctx, jid, archive)
 			})
 		},
@@ -47,7 +48,7 @@ func newChatsPinCmd(flags *rootFlags, pin bool) *cobra.Command {
 		Use:   use,
 		Short: short,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runChatState(flags, opts, use, func(ctx context.Context, a chatStateApp, jid types.JID) error {
+			return runChatState(flags, opts, use, nil, func(ctx context.Context, a chatStateApp, jid types.JID) error {
 				return a.PinChat(ctx, jid, pin)
 			})
 		},
@@ -63,7 +64,7 @@ func newChatsMuteCmd(flags *rootFlags) *cobra.Command {
 		Use:   "mute",
 		Short: "Mute a chat",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runChatState(flags, opts, "mute", func(ctx context.Context, a chatStateApp, jid types.JID) error {
+			return runChatState(flags, opts, "mute", nil, func(ctx context.Context, a chatStateApp, jid types.JID) error {
 				return a.MuteChat(ctx, jid, true, duration)
 			})
 		},
@@ -79,7 +80,7 @@ func newChatsUnmuteCmd(flags *rootFlags) *cobra.Command {
 		Use:   "unmute",
 		Short: "Unmute a chat",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runChatState(flags, opts, "unmute", func(ctx context.Context, a chatStateApp, jid types.JID) error {
+			return runChatState(flags, opts, "unmute", nil, func(ctx context.Context, a chatStateApp, jid types.JID) error {
 				return a.MuteChat(ctx, jid, false, 0)
 			})
 		},
@@ -98,12 +99,15 @@ func newChatsMarkReadCmd(flags *rootFlags, read bool) *cobra.Command {
 		Use:   use,
 		Short: short,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runChatState(flags, opts, use, func(ctx context.Context, a chatStateApp, jid types.JID) error {
+			return runChatState(flags, opts, use, &read, func(ctx context.Context, a chatStateApp, jid types.JID) error {
 				return a.MarkChatRead(ctx, jid, read)
 			})
 		},
 	}
 	addChatStateFlags(cmd, &opts)
+	if read {
+		cmd.Flags().BoolVar(&opts.receipts, "receipts", false, "send read receipts for up to 100 unread messages without waiting for app-state recovery; follows your read-receipt privacy setting")
+	}
 	return cmd
 }
 
@@ -112,9 +116,45 @@ type chatStateApp interface {
 	PinChat(context.Context, types.JID, bool) error
 	MuteChat(context.Context, types.JID, bool, time.Duration) error
 	MarkChatRead(context.Context, types.JID, bool) error
+	MarkChatReadWithReceipts(context.Context, types.JID) (int, types.ReceiptType, error)
 }
 
-func runChatState(flags *rootFlags, opts chatStateOptions, action string, run func(context.Context, chatStateApp, types.JID) error) error {
+// Receipt dispatch does not prove that a sender received a notification.
+type chatStateReceipts struct {
+	count int
+	kind  string
+}
+
+func (r chatStateReceipts) senderNotified() *bool {
+	if r.kind != string(types.ReceiptTypeReadSelf) {
+		return nil
+	}
+	notified := false
+	return &notified
+}
+
+const (
+	markReadKind         = "mark_read"
+	markReadReceiptsKind = "mark_read_receipts"
+)
+
+// A separate kind makes old daemons reject receipts instead of ignoring a flag.
+func markReadDelegateKind(receipts bool) string {
+	if receipts {
+		return markReadReceiptsKind
+	}
+	return markReadKind
+}
+
+// explainReceiptsDelegateError turns that rejection into the action to take.
+func explainReceiptsDelegateError(err error, requested bool) error {
+	if err == nil || !requested || !strings.Contains(err.Error(), "unsupported send kind") || !strings.Contains(err.Error(), markReadReceiptsKind) {
+		return err
+	}
+	return fmt.Errorf("the running sync process does not support --receipts and left the chat unread; restart `wacli sync` after upgrading, then run this again: %w", err)
+}
+
+func runChatState(flags *rootFlags, opts chatStateOptions, action string, delegateRead *bool, run func(context.Context, chatStateApp, types.JID) error) error {
 	if strings.TrimSpace(opts.chat) == "" {
 		return fmt.Errorf("--chat is required")
 	}
@@ -127,6 +167,25 @@ func runChatState(flags *rootFlags, opts chatStateOptions, action string, run fu
 
 	a, lk, err := newApp(ctx, flags, true, false)
 	if err != nil {
+		if delegateRead != nil {
+			resp, delegated, delegateErr := tryDelegateSend(ctx, flags, err, sendDelegateRequest{
+				Kind:     markReadDelegateKind(opts.receipts),
+				To:       opts.chat,
+				Pick:     opts.pick,
+				Read:     delegateRead,
+				Receipts: opts.receipts,
+			})
+			if delegated {
+				if delegateErr != nil {
+					return explainReceiptsDelegateError(delegateErr, opts.receipts)
+				}
+				receipts, err := delegatedReceipts(resp, opts.receipts)
+				if err != nil {
+					return err
+				}
+				return writeChatStateResult(flags, action, resp.Chat, receipts)
+			}
+		}
 		return err
 	}
 	defer closeApp(a, lk)
@@ -141,7 +200,7 @@ func runChatState(flags *rootFlags, opts chatStateOptions, action string, run fu
 	defer func() {
 		// Keep the handler active until the socket is closed, then let App.Close
 		// drain every persistence task before it closes the local database.
-		a.WA().Close()
+		a.WA().Disconnect()
 		removePersistenceHandler()
 	}()
 	if err := a.Connect(ctx, false, nil); err != nil {
@@ -152,19 +211,60 @@ func runChatState(flags *rootFlags, opts chatStateOptions, action string, run fu
 	if err != nil {
 		return err
 	}
-	if err := run(ctx, a, jid); err != nil {
+	// Receipt mode owns its local read boundary and bypasses app-state recovery.
+	var receipts *chatStateReceipts
+	if opts.receipts {
+		n, kind, err := a.MarkChatReadWithReceipts(ctx, jid)
+		if err != nil {
+			return err
+		}
+		receipts = &chatStateReceipts{count: n, kind: string(kind)}
+	} else if err := run(ctx, a, jid); err != nil {
 		return err
 	}
+	return writeChatStateResult(flags, action, jid.String(), receipts)
+}
 
+// writeChatStateResult prints a state command's result. receipts is set only
+// when --receipts was requested.
+func writeChatStateResult(flags *rootFlags, action, chat string, receipts *chatStateReceipts) error {
 	if flags.asJSON {
-		return out.WriteJSON(os.Stdout, map[string]any{
+		result := map[string]any{
 			"ok":     true,
 			"action": action,
-			"chat":   jid.String(),
-		})
+			"chat":   chat,
+		}
+		if receipts != nil {
+			result["receipts"] = receipts.count
+			if receipts.kind != "" {
+				result["receipt"] = receipts.kind
+				result["sender_notified"] = receipts.senderNotified()
+			}
+		}
+		return out.WriteJSON(os.Stdout, result)
 	}
-	fmt.Fprintf(os.Stdout, "%s: %s\n", action, jid.String())
+	if receipts == nil {
+		fmt.Fprintf(os.Stdout, "%s: %s\n", action, chat)
+		return nil
+	}
+	note := ""
+	if receipts.kind == string(types.ReceiptTypeReadSelf) {
+		note = fmt.Sprintf(", sent as %s: your read-receipt privacy setting keeps them from the sender", receipts.kind)
+	} else if receipts.count > 0 {
+		note = ", sender notification unknown; WhatsApp applies your privacy setting"
+	}
+	fmt.Fprintf(os.Stdout, "%s: %s (read receipts: %d%s)\n", action, chat, receipts.count, note)
 	return nil
+}
+
+func delegatedReceipts(resp sendDelegateResponse, requested bool) (*chatStateReceipts, error) {
+	if !requested {
+		return nil, nil
+	}
+	if resp.Receipts == nil {
+		return nil, fmt.Errorf("the running sync process did not report receipt results for %s; restart `wacli sync` after upgrading", resp.Chat)
+	}
+	return &chatStateReceipts{count: *resp.Receipts, kind: resp.ReceiptType}, nil
 }
 
 func addChatStateFlags(cmd *cobra.Command, opts *chatStateOptions) {

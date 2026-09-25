@@ -13,8 +13,8 @@ import (
 	"github.com/openclaw/wacli/internal/store"
 	"github.com/openclaw/wacli/internal/wa"
 	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 )
 
 const maxAuthConnectAttempts = 3
@@ -78,7 +78,7 @@ type SyncOptions struct {
 	WebhookSecret       string
 	WebhookAllowPrivate bool
 	WebhookEvents       SyncWebhookEventSet // nil = messages only
-	Verbosity           int                 // future
+	afterHistorySync    func(*events.HistorySync)
 }
 
 type SyncResult struct {
@@ -174,7 +174,7 @@ func (a *App) Sync(ctx context.Context, opts SyncOptions) (SyncResult, error) {
 	}
 
 	ps := &syncPresence{}
-	handlerID := a.addSyncEventHandler(syncCtx, opts, &messagesStored, &lastEvent, disconnected, loggedOut, staleReconnect, enqueueMedia, enqueueWebhook, limits, ps, mediaQ)
+	handlerID, appStateRecoveries := a.addSyncEventHandler(syncCtx, opts, &messagesStored, &lastEvent, disconnected, loggedOut, staleReconnect, enqueueMedia, enqueueWebhook, limits, ps, mediaQ)
 	defer a.wa.RemoveEventHandler(handlerID)
 
 	connectionEpoch.Store(nowUTC().UnixNano())
@@ -197,7 +197,7 @@ func (a *App) Sync(ctx context.Context, opts SyncOptions) (SyncResult, error) {
 	if err := a.migrateHistoricalLIDs(syncCtx); err != nil {
 		return SyncResult{MessagesStored: messagesStored.Load()}, err
 	}
-	a.syncAppStateDeltas(syncCtx)
+	a.syncAppStateDeltas(syncCtx, appStateRecoveries)
 
 	// Optional: bootstrap imports (helps contacts/groups management without waiting for events).
 	if opts.RefreshContacts {
@@ -254,19 +254,6 @@ func (a *App) Sync(ctx context.Context, opts SyncOptions) (SyncResult, error) {
 		return SyncResult{MessagesStored: messagesStored.Load()}, err
 	}
 	return SyncResult{MessagesStored: messagesStored.Load()}, nil
-}
-
-func (a *App) syncAppStateDeltas(ctx context.Context) {
-	for _, name := range []appstate.WAPatchName{appstate.WAPatchRegularHigh, appstate.WAPatchRegularLow, appstate.WAPatchRegular} {
-		fullSync := name == appstate.WAPatchRegular
-		if err := a.wa.FetchAppState(ctx, string(name), fullSync, false); err != nil {
-			a.emitWarning(
-				"app_state_sync_failed",
-				fmt.Sprintf("warning: failed to sync WhatsApp app state %s: %v", name, err),
-				map[string]any{"name": string(name), "error": err.Error()},
-			)
-		}
-	}
 }
 
 func (a *App) connectForSync(ctx context.Context, opts SyncOptions) error {
@@ -402,7 +389,14 @@ func (a *App) storeParsedMessage(ctx context.Context, pm wa.ParsedMessage) error
 	chatJID := canonicalJIDString(pm.Chat)
 	chatName := a.wa.ResolveChatName(ctx, pm.Chat, pm.PushName)
 	if pm.Chat != types.StatusBroadcastJID {
-		if err := a.db.UpsertChat(chatJID, chatKind(pm.Chat), chatName, pm.Timestamp); err != nil {
+		// Keep diagnostic placeholders without treating them as chat activity.
+		var err error
+		if pm.HasContent() {
+			err = a.db.UpsertChat(chatJID, chatKind(pm.Chat), chatName, pm.Timestamp)
+		} else {
+			err = a.db.UpsertChatMetadata(chatJID, chatKind(pm.Chat), chatName)
+		}
+		if err != nil {
 			return err
 		}
 	}

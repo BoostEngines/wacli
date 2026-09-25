@@ -83,7 +83,7 @@ func (a *App) BackfillHistory(ctx context.Context, opts BackfillOptions) (Backfi
 			return
 		}
 		for _, conv := range hs.Data.GetConversations() {
-			if strings.TrimSpace(conv.GetID()) != chatStr {
+			if a.canonicalStoreJIDString(ctx, strings.TrimSpace(conv.GetID())) != a.canonicalStoreJID(ctx, chat).String() {
 				continue
 			}
 			mu.Lock()
@@ -104,10 +104,8 @@ func (a *App) BackfillHistory(ctx context.Context, opts BackfillOptions) (Backfi
 			return
 		}
 	}
-	handlerID := a.wa.AddEventHandler(func(evt interface{}) {
+	handlerID := a.wa.AddEventHandler(func(evt any) {
 		switch v := evt.(type) {
-		case *events.HistorySync:
-			handleOnDemand(v)
 		case *events.Message:
 			notif := historySyncNotificationFromMessage(v)
 			if notif == nil || notif.GetSyncType() != waE2E.HistorySyncType_ON_DEMAND {
@@ -149,15 +147,20 @@ func (a *App) BackfillHistory(ctx context.Context, opts BackfillOptions) (Backfi
 			mu.Unlock()
 		}()
 
+		// The primary device may index history by LID even when local storage
+		// uses the corresponding phone JID. Keep the original anchor unchanged.
+		requestChat := a.wa.ResolvePNToLID(ctx, chat)
+		storeChat := a.canonicalStoreJID(ctx, chat).String()
 		requestsSent++
 		a.emitOrPrint("backfill_requesting", map[string]any{
-			"chat_jid":      chatStr,
-			"count":         opts.Count,
-			"request":       requestsSent,
-			"anchor_msg_id": anchor.MsgID,
-		}, "Requesting %d older messages for %s...\n", opts.Count, chatStr)
+			"chat_jid":         storeChat,
+			"request_chat_jid": requestChat.String(),
+			"count":            opts.Count,
+			"request":          requestsSent,
+			"anchor_msg_id":    anchor.MsgID,
+		}, "Requesting %d older messages for %s...\n", opts.Count, storeChat)
 		reqInfo := types.MessageInfo{
-			MessageSource: types.MessageSource{Chat: chat, IsFromMe: anchor.FromMe},
+			MessageSource: types.MessageSource{Chat: requestChat, IsFromMe: anchor.FromMe},
 			ID:            types.MessageID(anchor.MsgID),
 			Timestamp:     anchor.Timestamp,
 		}
@@ -178,10 +181,14 @@ func (a *App) BackfillHistory(ctx context.Context, opts BackfillOptions) (Backfi
 	}
 
 	syncRes, err := a.Sync(ctx, SyncOptions{
-		Mode:     SyncModeOnce,
-		AllowQR:  false,
-		IdleExit: opts.IdleExit,
+		Mode:             SyncModeOnce,
+		AllowQR:          false,
+		IdleExit:         opts.IdleExit,
+		afterHistorySync: handleOnDemand,
 		AfterConnect: func(ctx context.Context) error {
+			// Sync can learn mappings and migrate old LID rows while connecting.
+			// Resolve the local identity only after that migration has completed.
+			chatStr := a.canonicalStoreJID(ctx, chat).String()
 			for i := 0; i < opts.Requests; i++ {
 				oldest, err := a.db.GetOldestMessageInfo(chatStr)
 				if err != nil {
@@ -249,7 +256,7 @@ func (a *App) BackfillHistory(ctx context.Context, opts BackfillOptions) (Backfi
 	afterCount, _ := a.db.CountMessages()
 
 	return BackfillResult{
-		ChatJID:        chatStr,
+		ChatJID:        a.canonicalStoreJID(ctx, chat).String(),
 		RequestsSent:   requestsSent,
 		ResponsesSeen:  responsesSeen,
 		MessagesAdded:  afterCount - beforeCount,
