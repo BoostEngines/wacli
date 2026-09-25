@@ -41,7 +41,7 @@ func newContactsSearchCmd(flags *rootFlags) *cobra.Command {
 			}
 			defer closeApp(a, lk)
 
-			cs, err := a.DB().SearchContacts(args[0], limit)
+			cs, err := searchContactsForDisplay(ctx, a, args[0], limit)
 			if err != nil {
 				return err
 			}
@@ -87,7 +87,7 @@ func newContactsShowCmd(flags *rootFlags) *cobra.Command {
 			}
 			defer closeApp(a, lk)
 
-			c, err := a.DB().GetContact(jid)
+			c, err := getContactForDisplay(ctx, a, jid)
 			if err != nil {
 				return err
 			}
@@ -198,7 +198,11 @@ func newContactsAliasCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 			defer closeApp(a, lk)
-			if err := a.DB().SetAlias(jid, alias); err != nil {
+			jids, err := contactMetadataJIDs(ctx, a, jid)
+			if err != nil {
+				return err
+			}
+			if err := a.DB().SetAlias(jids, alias); err != nil {
 				return err
 			}
 			if flags.asJSON {
@@ -226,7 +230,11 @@ func newContactsAliasCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 			defer closeApp(a, lk)
-			if err := a.DB().RemoveAlias(jid); err != nil {
+			jids, err := contactMetadataJIDs(ctx, a, jid)
+			if err != nil {
+				return err
+			}
+			if err := a.DB().RemoveAlias(jids); err != nil {
 				return err
 			}
 			if flags.asJSON {
@@ -237,8 +245,8 @@ func newContactsAliasCmd(flags *rootFlags) *cobra.Command {
 		},
 	})
 
-	_ = cmd.PersistentFlags().String("jid", "", "contact JID")
-	_ = cmd.PersistentFlags().String("alias", "", "alias")
+	cmd.PersistentFlags().String("jid", "", "contact JID")
+	cmd.PersistentFlags().String("alias", "", "alias")
 	return cmd
 }
 
@@ -266,7 +274,11 @@ func newContactsTagsCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 			defer closeApp(a, lk)
-			if err := a.DB().AddTag(jid, tag); err != nil {
+			jids, err := contactMetadataJIDs(ctx, a, jid)
+			if err != nil {
+				return err
+			}
+			if err := a.DB().AddTag(jids, tag); err != nil {
 				return err
 			}
 			if flags.asJSON {
@@ -295,7 +307,11 @@ func newContactsTagsCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 			defer closeApp(a, lk)
-			if err := a.DB().RemoveTag(jid, tag); err != nil {
+			jids, err := contactMetadataJIDs(ctx, a, jid)
+			if err != nil {
+				return err
+			}
+			if err := a.DB().RemoveTag(jids, tag); err != nil {
 				return err
 			}
 			if flags.asJSON {
@@ -306,7 +322,7 @@ func newContactsTagsCmd(flags *rootFlags) *cobra.Command {
 		},
 	})
 
-	_ = cmd.PersistentFlags().String("jid", "", "contact JID")
-	_ = cmd.PersistentFlags().String("tag", "", "tag")
+	cmd.PersistentFlags().String("jid", "", "contact JID")
+	cmd.PersistentFlags().String("tag", "", "tag")
 	return cmd
 }

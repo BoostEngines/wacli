@@ -52,7 +52,7 @@ type syncPresence struct {
 	cleanupStarted bool
 }
 
-func (a *App) addSyncEventHandler(ctx context.Context, opts SyncOptions, messagesStored, lastEvent *atomic.Int64, disconnected chan<- struct{}, loggedOut chan<- struct{}, staleReconnect chan<- staleReconnectRequest, enqueueMedia func(string, string), enqueueWebhook func(syncWebhookEvent), limits *syncStorageLimits, ps *syncPresence, mediaQ *mediaQueue) uint32 {
+func (a *App) addSyncEventHandler(ctx context.Context, opts SyncOptions, messagesStored, lastEvent *atomic.Int64, disconnected chan<- struct{}, loggedOut chan<- struct{}, staleReconnect chan<- staleReconnectRequest, enqueueMedia func(string, string), enqueueWebhook func(syncWebhookEvent), limits *syncStorageLimits, ps *syncPresence, mediaQ *mediaQueue) (uint32, *sync.Map) {
 	var panicCount atomic.Int64
 	var appStateRecoveries sync.Map
 	if enqueueWebhook == nil {
@@ -62,7 +62,7 @@ func (a *App) addSyncEventHandler(ctx context.Context, opts SyncOptions, message
 	if !opts.WebhookEvents.Enabled(SyncWebhookEventMessage) {
 		enqueueWebhookMessage = func(wa.ParsedMessage) {}
 	}
-	return a.wa.AddEventHandler(func(evt interface{}) {
+	handlerID := a.wa.AddEventHandler(func(evt any) {
 		if mediaQ != nil {
 			if !mediaQ.beginProducer() {
 				return
@@ -113,6 +113,10 @@ func (a *App) addSyncEventHandler(ctx context.Context, opts SyncOptions, message
 		case *events.HistorySync:
 			lastEvent.Store(nowUTC().UnixNano())
 			a.handleHistorySync(ctx, opts, v, messagesStored, lastEvent, enqueueMedia, limits)
+			// Backfill checks local anchors as soon as it receives this response.
+			if opts.afterHistorySync != nil {
+				opts.afterHistorySync(v)
+			}
 		case *events.Receipt:
 			lastEvent.Store(nowUTC().UnixNano())
 			a.handleReceiptPersistenceEvent(ctx, v)
@@ -168,7 +172,7 @@ func (a *App) addSyncEventHandler(ctx context.Context, opts SyncOptions, message
 			a.emitOrPrint("stream_replaced", nil, "\nStream replaced.\n")
 			// whatsmeow emits StreamReplaced before onDisconnect necessarily
 			// clears the socket, so force-close before reconnecting.
-			a.wa.Close()
+			a.wa.Disconnect()
 			select {
 			case disconnected <- struct{}{}:
 			default:
@@ -192,6 +196,7 @@ func (a *App) addSyncEventHandler(ctx context.Context, opts SyncOptions, message
 			}
 		}
 	})
+	return handlerID, &appStateRecoveries
 }
 
 func (a *App) handleKeepAliveTimeout(opts SyncOptions, evt *events.KeepAliveTimeout, staleReconnect chan<- staleReconnectRequest) {
@@ -215,7 +220,7 @@ func (a *App) handleKeepAliveTimeout(opts SyncOptions, evt *events.KeepAliveTime
 	}
 }
 
-func syncActivityEvent(evt interface{}) bool {
+func syncActivityEvent(evt any) bool {
 	switch evt.(type) {
 	case nil,
 		*events.KeepAliveTimeout,
@@ -237,7 +242,7 @@ func syncActivityEvent(evt interface{}) bool {
 	}
 }
 
-func (a *App) handleAppStatePersistenceEvent(ctx context.Context, evt interface{}, tracker *appStatePersistenceTracker) {
+func (a *App) handleAppStatePersistenceEvent(ctx context.Context, evt any, tracker *appStatePersistenceTracker) {
 	if tracker != nil {
 		a.persistAppStateEvent(ctx, evt, tracker)
 		return
@@ -290,7 +295,7 @@ type appStateRecoveryMarker struct {
 	generation int64
 }
 
-func (a *App) markLiveAppStateRecovery(evt interface{}) ([]appStateRecoveryMarker, error) {
+func (a *App) markLiveAppStateRecovery(evt any) ([]appStateRecoveryMarker, error) {
 	collections := appStateCollectionsForEvent(evt)
 	names := make([]string, len(collections))
 	for i, collection := range collections {
@@ -319,7 +324,7 @@ func (a *App) clearLiveAppStateRecovery(markers []appStateRecoveryMarker) {
 	}
 }
 
-func (a *App) persistAppStateEvent(ctx context.Context, evt interface{}, tracker *appStatePersistenceTracker) error {
+func (a *App) persistAppStateEvent(ctx context.Context, evt any, tracker *appStatePersistenceTracker) error {
 	var err error
 	switch v := evt.(type) {
 	case *events.AppState:
@@ -337,7 +342,7 @@ func (a *App) persistAppStateEvent(ctx context.Context, evt interface{}, tracker
 	return err
 }
 
-func appStateCollectionsForEvent(evt interface{}) []appstate.WAPatchName {
+func appStateCollectionsForEvent(evt any) []appstate.WAPatchName {
 	switch v := evt.(type) {
 	case *events.Archive, *events.Pin, *events.MarkChatAsRead:
 		return []appstate.WAPatchName{appstate.WAPatchRegularLow}
@@ -362,7 +367,12 @@ func (a *App) handleReceiptPersistenceEvent(ctx context.Context, evt *events.Rec
 
 func (a *App) handleReceiptEvent(ctx context.Context, evt *events.Receipt) {
 	chat := a.canonicalStoreJID(ctx, evt.Chat)
-	if err := a.db.SetChatUnreadCount(canonicalJIDString(chat), 0); err != nil {
+	chatJID := canonicalJIDString(chat)
+	through, ids, err := a.receiptReadPosition(chatJID, evt)
+	if err == nil {
+		err = a.db.ClearChatUnreadThrough(chatJID, through, ids)
+	}
+	if err != nil {
 		a.emitWarning(
 			"receipt_read_self_store_failed",
 			fmt.Sprintf("warning: failed to clear unread count from read-self receipt for chat %s: %v", chat, err),
@@ -406,7 +416,7 @@ func (a *App) handleDeleteForMeEvent(ctx context.Context, evt *events.DeleteForM
 	return nil
 }
 
-func (a *App) handleLiveCallEvent(ctx context.Context, evt interface{}) error {
+func (a *App) handleLiveCallEvent(ctx context.Context, evt any) error {
 	self := a.linkedLiveCallIdentity()
 	var alternateSelf []types.JID
 	if _, ok := evt.(*events.AppState); ok {
@@ -496,51 +506,13 @@ func (a *App) handleStarEvent(ctx context.Context, evt *events.Star) error {
 	return nil
 }
 
-func (a *App) handleAppStateSyncError(ctx context.Context, evt *events.AppStateSyncError, recoveries *sync.Map) {
-	if evt == nil || !errors.Is(evt.Error, appstate.ErrMismatchingLTHash) {
-		return
-	}
-	if a.ownsManualAppStateFetch(evt.Name) {
-		return
-	}
-	name := strings.TrimSpace(string(evt.Name))
-	if name == "" {
-		return
-	}
-	if recoveries == nil {
-		recoveries = &sync.Map{}
-	}
-	if _, loaded := recoveries.LoadOrStore(name, struct{}{}); loaded {
-		return
-	}
-
-	a.emitWarning(
-		"app_state_lthash_mismatch",
-		fmt.Sprintf("warning: app state %s hit an LTHash mismatch; requesting recovery snapshot", name),
-		map[string]any{"name": name},
-	)
-	go func() {
-		reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		reqID, err := a.wa.RequestAppStateRecovery(reqCtx, name)
-		if err != nil {
-			a.emitWarning(
-				"app_state_recovery_failed",
-				fmt.Sprintf("warning: app state %s recovery request failed: %v", name, err),
-				map[string]any{"name": name, "error": err.Error()},
-			)
-			return
-		}
-		if a.eventsEnabled() {
-			a.emitEvent("app_state_recovery_requested", map[string]any{"name": name, "id": string(reqID)})
-		} else {
-			fmt.Fprintf(os.Stderr, "\rRequested app state %s recovery (id %s)\n", name, reqID)
-		}
-	}()
-}
-
 func (a *App) handleLiveSyncMessage(ctx context.Context, opts SyncOptions, v *events.Message, messagesStored *atomic.Int64, enqueueMedia func(string, string), enqueueWebhook func(wa.ParsedMessage), limits ...*syncStorageLimits) {
 	if historySyncNotificationFromMessage(v) != nil {
+		return
+	}
+	var ok bool
+	v, ok = a.decryptSecretEdit(ctx, v)
+	if !ok {
 		return
 	}
 	pm := wa.ParseLiveMessage(v)
@@ -662,6 +634,23 @@ func (a *App) handleHistorySync(ctx context.Context, opts SyncOptions, v *events
 			if pm.ID == "" || pm.Chat.IsEmpty() {
 				continue
 			}
+			unwrapped := (&events.Message{RawMessage: m.Message.GetMessage()}).UnwrapRaw()
+			if isSecretEdit(unwrapped.Message) {
+				evt, err := a.wa.ParseWebMessage(pm.Chat, m.Message)
+				if err != nil {
+					a.emitWarning(
+						"encrypted_edit_parse_failed",
+						fmt.Sprintf("warning: failed to parse encrypted edit %s: %v", pm.ID, err),
+						map[string]any{"message_id": pm.ID, "error": err.Error()},
+					)
+					continue
+				}
+				evt, ok := a.decryptSecretEdit(ctx, evt)
+				if !ok {
+					continue
+				}
+				pm = wa.ParseLiveMessage(evt)
+			}
 			var pollEvt *events.Message
 			if normalized, evt, ok := a.normalizeHistoryPollMessage(pm, m.Message); ok {
 				pm = normalized
@@ -745,7 +734,8 @@ func (a *App) incrementLiveUnread(ctx context.Context, pm wa.ParsedMessage) {
 }
 
 func (a *App) shouldIncrementLiveUnread(ctx context.Context, pm wa.ParsedMessage) bool {
-	if pm.FromMe || pm.ID == "" || pm.Chat.IsEmpty() || pm.Chat == types.StatusBroadcastJID {
+	if pm.FromMe || pm.ID == "" || pm.Chat.IsEmpty() || pm.Chat == types.StatusBroadcastJID ||
+		!pm.HasContent() || pm.Revoked || pm.ReactionToID != "" || pm.ReactionEmoji != "" {
 		return false
 	}
 	chat := canonicalJIDString(a.canonicalStoreJID(ctx, pm.Chat))

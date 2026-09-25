@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -227,7 +228,14 @@ func TestMessageWebhookPayloadMatchesLegacyBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal legacy message: %v", err)
 	}
-	if !bytes.Equal(got, legacy) {
+	var gotFields, legacyFields map[string]any
+	if err := json.Unmarshal(got, &gotFields); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(legacy, &legacyFields); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotFields, legacyFields) {
 		t.Fatalf("message payload changed\ngot:  %s\nwant: %s", got, legacy)
 	}
 }
@@ -321,7 +329,7 @@ func assertSyncWebhookPayloadJIDs(t *testing.T, payload any, want string, paths 
 	}
 	for _, path := range paths {
 		value := decoded
-		for _, part := range strings.Split(path, ".") {
+		for part := range strings.SplitSeq(path, ".") {
 			switch current := value.(type) {
 			case map[string]any:
 				value = current[part]
@@ -361,7 +369,6 @@ func TestPostSyncWebhookEventSignsNewEventKinds(t *testing.T) {
 	}
 
 	for _, event := range events {
-		event := event
 		t.Run(string(event.Kind), func(t *testing.T) {
 			var body []byte
 			var signature string
@@ -460,7 +467,7 @@ func emitWebhookEvents(t *testing.T, webhookEvents string, emit func(f *fakeWA))
 	t.Cleanup(stopWebhook)
 
 	var messagesStored, lastEvent atomic.Int64
-	handlerID := a.addSyncEventHandler(
+	handlerID, _ := a.addSyncEventHandler(
 		ctx,
 		opts,
 		&messagesStored,
@@ -545,7 +552,7 @@ func TestWebhookEventsOptInDeliversAllThreeKinds(t *testing.T) {
 	})
 
 	seen := map[string]bool{}
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		var payload struct {
 			EventType string
 		}

@@ -12,10 +12,11 @@ import (
 	"github.com/openclaw/wacli/internal/config"
 	"github.com/openclaw/wacli/internal/lock"
 	"github.com/openclaw/wacli/internal/out"
+	"github.com/openclaw/wacli/internal/wa"
 	"github.com/spf13/cobra"
 )
 
-const sourceVersion = "0.18.1"
+const sourceVersion = "0.19.0"
 
 var version string
 
@@ -61,6 +62,9 @@ func execute(args []string) error {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       effectiveVersion(),
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			wa.SetLibsignalEvents(out.NewEventWriter(os.Stderr, flags.events))
+		},
 	}
 	rootCmd.SetVersionTemplate("wacli {{.Version}}\n")
 
